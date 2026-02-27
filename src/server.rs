@@ -14,6 +14,7 @@ use refine_mcp::dedup::dedup_findings;
 use refine_mcp::facts::types::FactTable;
 use refine_mcp::parser::parse_red_team_output;
 use refine_mcp::prompts::{build_blue_team_prompt, build_red_team_prompts};
+use refine_mcp::state::RefineState;
 use refine_mcp::types::RefineMode;
 
 // ─── Tool Parameter Structs ────────────────────────────────────
@@ -44,6 +45,8 @@ pub struct PrepareAttackParams {
 pub struct SynthesizeFindingsParams {
     /// Raw markdown reports from red team agents
     pub raw_reports: Vec<String>,
+    /// Path to plan file (for loading persistent state)
+    pub plan_path: Option<String>,
     /// Brief plan summary for blue team context
     pub plan_summary: Option<String>,
     /// Refine mode for blue team model selection
@@ -238,7 +241,7 @@ impl RefineServer {
     // ── Tool 4: synthesize_findings ────────────────────────────
 
     /// Parse, validate, dedup, and rank red team findings.
-    #[tool(description = "Synthesize red team reports: parse markdown, dedup, validate, rank, generate blue team prompt")]
+    #[tool(description = "Synthesize red team reports: parse markdown, dedup, validate, rank, merge with persistent state, generate blue team prompt")]
     async fn synthesize_findings(
         &self,
         params: Parameters<SynthesizeFindingsParams>,
@@ -263,24 +266,44 @@ impl RefineServer {
         // Dedup and score
         let deduped = dedup_findings(all_findings);
 
-        // Generate blue team prompt
-        let blue_prompt = build_blue_team_prompt(mode, &deduped, &plan_summary);
+        // Load persistent state and merge if plan_path provided
+        let plan_path = params.0.plan_path.as_deref().map(Path::new);
+        let mut state = plan_path.map_or_else(RefineState::default, RefineState::load);
+        state.merge_findings(deduped.clone());
+        state.last_run = Some(chrono_date_now());
+
+        // Use active findings (excludes Fixed/FalsePositive) for blue prompt
+        let active: Vec<refine_mcp::types::Finding> =
+            state.active_findings().into_iter().cloned().collect();
+
+        // Generate blue team prompt from active findings only
+        let blue_prompt = build_blue_team_prompt(mode, &active, &plan_summary);
 
         // Stats
-        let fatal_count = deduped
+        let fatal_count = active
             .iter()
             .filter(|f| f.severity == refine_mcp::types::Severity::Fatal)
             .count();
-        let high_count = deduped.len() - fatal_count;
+        let high_count = active.len() - fatal_count;
+
+        // Save state (best-effort, don't fail the tool)
+        if let Some(pp) = plan_path {
+            if let Err(e) = state.save(pp) {
+                parse_errors.push(format!("State save warning: {e}"));
+            }
+        }
 
         let output = serde_json::json!({
-            "findings": deduped,
+            "findings": active,
             "blue_prompt": blue_prompt.prompt,
             "blue_model": blue_prompt.recommended_model,
             "stats": {
                 "raw_reports": raw_count_total,
                 "raw_findings": raw_finding_count,
                 "after_dedup": deduped.len(),
+                "active_findings": active.len(),
+                "total_state_findings": state.findings.len(),
+                "run_count": state.run_count,
                 "fatal_count": fatal_count,
                 "high_count": high_count,
             },
@@ -332,19 +355,29 @@ impl RefineServer {
             rmcp::ErrorData::internal_error(format!("Failed to write plan: {e}"), None)
         })?;
 
+        // Save state — ensure findings persist across runs
+        let mut state = RefineState::load(&plan_path);
+        state.merge_findings(findings.clone());
+        state.last_run = Some(chrono_date_now());
+        let state_warning = state.save(&plan_path).err().map(|e| e.to_string());
+
         let fatal_count = findings
             .iter()
             .filter(|f| f.severity == refine_mcp::types::Severity::Fatal)
             .count();
 
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "plan_path": plan_path.to_string_lossy(),
             "backup_path": backup_path.to_string_lossy(),
             "findings_count": findings.len(),
             "fatal_count": fatal_count,
             "high_count": findings.len() - fatal_count,
             "mode": format!("{mode:?}"),
+            "state_run_count": state.run_count,
         });
+        if let Some(warn) = state_warning {
+            output["state_warning"] = serde_json::Value::String(warn);
+        }
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&output).unwrap_or_default(),
