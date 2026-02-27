@@ -1,0 +1,161 @@
+use std::path::PathBuf;
+use std::sync::LazyLock;
+
+use regex::Regex;
+
+use crate::types::{Finding, FindingStatus, RedTeamId, Severity};
+
+// ─── Pre-compiled Regexes ──────────────────────────────────────
+
+/// Matches `## [RT-A] ...` or `## [RT-B] ...`
+static RE_SOURCE_HEADER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^##\s+\[RT-([AB])\]").expect("valid regex"));
+
+/// Matches `### FATAL` or `### HIGH`
+static RE_SEVERITY_HEADER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^###\s+(FATAL|HIGH)").expect("valid regex"));
+
+/// Matches `1. **title** (path/to/file.php:123-456)` or `(path:123)`
+static RE_FINDING_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\d+\.\s+\*\*(.+?)\*\*\s+\(([^:)]+):(\d+)(?:-(\d+))?\)")
+        .expect("valid regex")
+});
+
+/// Matches `   - 問題：...` or `   - Problem: ...`
+static RE_PROBLEM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s+-\s+問題[：:](.+)").expect("valid regex"));
+
+/// Matches `   - 攻擊場景：...` or `   - Attack scenario: ...`
+static RE_ATTACK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s+-\s+攻擊場景[：:](.+)").expect("valid regex"));
+
+/// Matches `   - 建議修復：...` or `   - Suggested fix: ...`
+static RE_FIX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s+-\s+建議修復[：:](.+)").expect("valid regex"));
+
+// ─── Public API ────────────────────────────────────────────────
+
+/// Parse structured red team markdown output into `Finding` structs.
+///
+/// The expected format uses hierarchical headers:
+/// - `## [RT-A] description` — red team source
+/// - `### FATAL` / `### HIGH` — severity
+/// - `1. **title** (file:line-line)` — individual finding
+/// - `- 問題：...` / `- 攻擊場景：...` / `- 建議修復：...` — details
+pub fn parse_red_team_output(md: &str) -> anyhow::Result<Vec<Finding>> {
+    let mut findings = Vec::new();
+    let mut current_source: Option<RedTeamId> = None;
+    let mut current_severity: Option<Severity> = None;
+
+    // In-progress finding being assembled
+    let mut pending: Option<PartialFinding> = None;
+    let mut counter: u32 = 0;
+
+    for line in md.lines() {
+        // Check for source header: ## [RT-A] ...
+        if let Some(caps) = RE_SOURCE_HEADER.captures(line) {
+            flush_pending(&mut pending, &mut findings, &mut counter);
+            current_source = Some(match &caps[1] {
+                "A" => RedTeamId::RtA,
+                "B" => RedTeamId::RtB,
+                _ => continue,
+            });
+            current_severity = None;
+            continue;
+        }
+
+        // Check for severity header: ### FATAL / ### HIGH
+        if let Some(caps) = RE_SEVERITY_HEADER.captures(line) {
+            flush_pending(&mut pending, &mut findings, &mut counter);
+            current_severity = Some(match &caps[1] {
+                "FATAL" => Severity::Fatal,
+                "HIGH" => Severity::High,
+                _ => continue,
+            });
+            continue;
+        }
+
+        // Check for finding header: 1. **title** (path:line-line)
+        if let Some(caps) = RE_FINDING_HEADER.captures(line) {
+            flush_pending(&mut pending, &mut findings, &mut counter);
+
+            let title = caps[1].to_string();
+            let file_path = PathBuf::from(&caps[2]);
+            let start_line: u32 = caps[3].parse().unwrap_or(0);
+            let end_line: u32 = caps
+                .get(4)
+                .map_or(start_line, |m| m.as_str().parse().unwrap_or(start_line));
+
+            pending = Some(PartialFinding {
+                source: current_source,
+                severity: current_severity,
+                title,
+                file_path,
+                line_range: Some((start_line, end_line)),
+                problem: None,
+                attack_scenario: None,
+                suggested_fix: None,
+            });
+            continue;
+        }
+
+        // Fill in sub-fields of the current pending finding
+        if let Some(ref mut pf) = pending {
+            if let Some(caps) = RE_PROBLEM.captures(line) {
+                pf.problem = Some(caps[1].trim().to_string());
+            } else if let Some(caps) = RE_ATTACK.captures(line) {
+                pf.attack_scenario = Some(caps[1].trim().to_string());
+            } else if let Some(caps) = RE_FIX.captures(line) {
+                pf.suggested_fix = Some(caps[1].trim().to_string());
+            }
+        }
+    }
+
+    // Flush last pending finding
+    flush_pending(&mut pending, &mut findings, &mut counter);
+
+    Ok(findings)
+}
+
+// ─── Internal Types ────────────────────────────────────────────
+
+struct PartialFinding {
+    source: Option<RedTeamId>,
+    severity: Option<Severity>,
+    title: String,
+    file_path: PathBuf,
+    line_range: Option<(u32, u32)>,
+    problem: Option<String>,
+    attack_scenario: Option<String>,
+    suggested_fix: Option<String>,
+}
+
+fn flush_pending(
+    pending: &mut Option<PartialFinding>,
+    findings: &mut Vec<Finding>,
+    counter: &mut u32,
+) {
+    let Some(pf) = pending.take() else {
+        return;
+    };
+
+    *counter += 1;
+
+    let source = pf.source.unwrap_or(RedTeamId::RtA);
+    let severity = pf.severity.unwrap_or(Severity::High);
+
+    findings.push(Finding {
+        id: format!("RT-{counter:03}"),
+        severity,
+        title: pf.title,
+        sources: vec![source],
+        file_path: pf.file_path,
+        line_range: pf.line_range,
+        problem: pf.problem.unwrap_or_default(),
+        attack_scenario: pf.attack_scenario.unwrap_or_default(),
+        suggested_fix: pf.suggested_fix,
+        affected_plan_steps: Vec::new(),
+        status: FindingStatus::New,
+        impact_score: 0,
+    });
+}
