@@ -51,3 +51,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Regex (for markdown parsing + fact extraction)
 regex = "1"
+
+# Date formatting (replaces hand-rolled date math)
+time = { version = "0.3", features = ["formatting"] }

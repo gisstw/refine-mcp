@@ -270,7 +270,7 @@ impl RefineServer {
         let plan_path = params.0.plan_path.as_deref().map(Path::new);
         let mut state = plan_path.map_or_else(RefineState::default, RefineState::load);
         state.merge_findings(deduped.clone());
-        state.last_run = Some(chrono_date_now());
+        state.last_run = Some(date_today());
 
         // Use active findings (excludes Fixed/FalsePositive) for blue prompt
         let active: Vec<refine_mcp::types::Finding> =
@@ -358,7 +358,7 @@ impl RefineServer {
         // Save state — ensure findings persist across runs
         let mut state = RefineState::load(&plan_path);
         state.merge_findings(findings.clone());
-        state.last_run = Some(chrono_date_now());
+        state.last_run = Some(date_today());
         let state_warning = state.save(&plan_path).err().map(|e| e.to_string());
 
         let fatal_count = findings
@@ -421,7 +421,8 @@ fn extract_file_references(content: &str) -> Vec<String> {
     use regex::Regex;
 
     static RE_FILE_REF: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?:^|\s|`)((?:app|src|resources|routes|config|database|tests|public)/[^\s`\)]+\.\w+)")
+        // Match relative paths (app/..., src/...) and absolute paths (/home/..., /var/...)
+        Regex::new(r"(?:^|\s|`)((?:(?:app|src|resources|routes|config|database|tests|public)/|/[\w.]+/)[^\s`\)]+\.\w+)")
             .expect("valid regex")
     });
 
@@ -443,7 +444,7 @@ fn generate_refinement_section(
 ) -> String {
     use std::fmt::Write;
 
-    let now = chrono_date_now();
+    let now = date_today();
 
     let fatal_count = findings
         .iter()
@@ -533,35 +534,173 @@ fn write_finding(out: &mut String, f: &refine_mcp::types::Finding, idx: usize) {
     }
 }
 
-/// Get current date as YYYY-MM-DD string (avoids chrono dependency).
-fn chrono_date_now() -> String {
-    // Use simple approach to avoid adding chrono just for a date
-    let now = std::time::SystemTime::now();
-    let duration = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    // Rough date calculation (good enough for display)
-    let days = secs / 86400;
-    let years = (days * 400) / 146_097; // Approximate
-    let year = 1970 + years;
-    let day_of_year = days - (years * 365 + years / 4 - years / 100 + years / 400);
-    let month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut month = 1u64;
-    let mut remaining = day_of_year;
-    for &md in &month_days {
-        if remaining < md {
-            break;
-        }
-        remaining -= md;
-        month += 1;
-    }
-    let day = remaining + 1;
-    format!("{year:04}-{month:02}-{day:02}")
+/// Get current date as YYYY-MM-DD string.
+fn date_today() -> String {
+    let now = time::OffsetDateTime::now_utc();
+    format!("{:04}-{:02}-{:02}", now.year(), now.month() as u8, now.day())
 }
 
-/// Validate that a path reference actually exists on disk.
-#[allow(dead_code)]
-fn validate_file_exists(file_path: &Path) -> bool {
-    file_path.exists()
+// ─── Tests ─────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use refine_mcp::types::{Finding, FindingStatus, RedTeamId, Severity};
+
+    // ── parse_mode ──
+
+    #[test]
+    fn parse_mode_default_variants() {
+        assert_eq!(parse_mode(None).unwrap(), RefineMode::Default);
+        assert_eq!(parse_mode(Some("default")).unwrap(), RefineMode::Default);
+        assert_eq!(parse_mode(Some("lite")).unwrap(), RefineMode::Lite);
+        assert_eq!(parse_mode(Some("auto")).unwrap(), RefineMode::Auto);
+    }
+
+    #[test]
+    fn parse_mode_invalid_returns_error() {
+        let err = parse_mode(Some("turbo")).unwrap_err();
+        assert!(err.message.contains("turbo"));
+    }
+
+    // ── extract_file_references ──
+
+    #[test]
+    fn extracts_relative_paths() {
+        let content = "Modify `app/Services/BillingService.php` and `src/main.rs` here.";
+        let refs = extract_file_references(content);
+        assert_eq!(refs, vec![
+            "app/Services/BillingService.php",
+            "src/main.rs",
+        ]);
+    }
+
+    #[test]
+    fn extracts_absolute_paths() {
+        let content = "Source: `/home/www/project/src/main.rs` is the entry.";
+        let refs = extract_file_references(content);
+        assert!(refs.iter().any(|r| r.contains("home/www/project/src/main.rs")));
+    }
+
+    #[test]
+    fn deduplicates_and_sorts() {
+        let content = "app/A.php and app/B.php and app/A.php again";
+        let refs = extract_file_references(content);
+        assert_eq!(refs, vec!["app/A.php", "app/B.php"]);
+    }
+
+    #[test]
+    fn ignores_non_file_paths() {
+        let content = "This is plain text with no file references at all.";
+        let refs = extract_file_references(content);
+        assert!(refs.is_empty());
+    }
+
+    // ── date_today ──
+
+    #[test]
+    fn date_today_format() {
+        let d = date_today();
+        // Should match YYYY-MM-DD
+        assert_eq!(d.len(), 10);
+        assert_eq!(&d[4..5], "-");
+        assert_eq!(&d[7..8], "-");
+        let year: u32 = d[..4].parse().unwrap();
+        assert!(year >= 2026);
+    }
+
+    // ── generate_refinement_section ──
+
+    fn make_finding(severity: Severity, title: &str) -> Finding {
+        Finding {
+            id: "T-001".to_string(),
+            severity,
+            title: title.to_string(),
+            sources: vec![RedTeamId::RtA],
+            file_path: PathBuf::from("app/Services/Svc.php"),
+            line_range: Some((10, 20)),
+            problem: "test problem".to_string(),
+            attack_scenario: "test attack".to_string(),
+            suggested_fix: None,
+            affected_plan_steps: Vec::new(),
+            status: FindingStatus::New,
+            impact_score: 100,
+        }
+    }
+
+    #[test]
+    fn refinement_section_contains_header() {
+        let findings = vec![make_finding(Severity::Fatal, "bug A")];
+        let section = generate_refinement_section(&findings, "", RefineMode::Default);
+        assert!(section.contains("## 🔴 Refinement"));
+        assert!(section.contains("Mode: Default"));
+        assert!(section.contains("FATAL: 1"));
+        assert!(section.contains("HIGH: 0"));
+    }
+
+    #[test]
+    fn refinement_section_lists_findings() {
+        let findings = vec![
+            make_finding(Severity::Fatal, "fatal bug"),
+            make_finding(Severity::High, "high issue"),
+        ];
+        let section = generate_refinement_section(&findings, "", RefineMode::Lite);
+        assert!(section.contains("**fatal bug**"));
+        assert!(section.contains("**high issue**"));
+        assert!(section.contains("### FATAL 問題"));
+        assert!(section.contains("### HIGH 問題"));
+    }
+
+    #[test]
+    fn refinement_section_includes_blue_result() {
+        let section = generate_refinement_section(&[], "Blue team found combo attack", RefineMode::Auto);
+        assert!(section.contains("### 交叉分析（藍隊）"));
+        assert!(section.contains("Blue team found combo attack"));
+    }
+
+    #[test]
+    fn refinement_section_empty_blue_skipped() {
+        let section = generate_refinement_section(&[], "", RefineMode::Auto);
+        assert!(!section.contains("交叉分析"));
+    }
+
+    // ── write_finding ──
+
+    #[test]
+    fn write_finding_format() {
+        let mut f = make_finding(Severity::Fatal, "test title");
+        f.suggested_fix = Some("fix it".to_string());
+        f.sources = vec![RedTeamId::RtA, RedTeamId::RtB];
+
+        let mut out = String::new();
+        write_finding(&mut out, &f, 1);
+
+        assert!(out.contains("1. **test title**"));
+        assert!(out.contains("app/Services/Svc.php:10-20"));
+        assert!(out.contains("RT-A, RT-B"));
+        assert!(out.contains("建議修復：fix it"));
+    }
+
+    #[test]
+    fn write_finding_no_line_range() {
+        let mut f = make_finding(Severity::High, "no lines");
+        f.line_range = None;
+
+        let mut out = String::new();
+        write_finding(&mut out, &f, 3);
+
+        assert!(out.contains("3. **no lines** (app/Services/Svc.php)"));
+    }
+
+    #[test]
+    fn write_finding_same_start_end_line() {
+        let mut f = make_finding(Severity::High, "single line");
+        f.line_range = Some((42, 42));
+
+        let mut out = String::new();
+        write_finding(&mut out, &f, 1);
+
+        assert!(out.contains("app/Services/Svc.php:42)"));
+        assert!(!out.contains("42-42"));
+    }
 }
