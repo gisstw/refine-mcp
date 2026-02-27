@@ -21,9 +21,10 @@ pub enum Severity {
     High,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingStatus {
+    #[default]
     New,
     Confirmed,
     Fixed,
@@ -42,9 +43,41 @@ pub struct Finding {
     pub attack_scenario: String,
     pub suggested_fix: Option<String>,
     pub affected_plan_steps: Vec<String>,
+    #[serde(default)]
     pub status: FindingStatus,
+    /// Set by `dedup::dedup_findings()` — do not set manually at construction.
+    #[serde(default)]
     pub impact_score: u32,
 }
+
+impl Finding {
+    /// Create a new finding with safe defaults (`status` = New, `impact_score` = 0).
+    #[must_use]
+    pub fn new(
+        severity: Severity,
+        title: String,
+        source: RedTeamId,
+        file_path: PathBuf,
+    ) -> Self {
+        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self {
+            id: format!("RT-{n:03}"),
+            severity,
+            title,
+            sources: vec![source],
+            file_path,
+            line_range: None,
+            problem: String::new(),
+            attack_scenario: String::new(),
+            suggested_fix: None,
+            affected_plan_steps: Vec::new(),
+            status: FindingStatus::New,
+            impact_score: 0,
+        }
+    }
+}
+
 
 // ─── Refine Mode ─────────────────────────────────────────────
 

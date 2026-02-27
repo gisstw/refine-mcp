@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::types::{Finding, FindingStatus, RedTeamId, Severity};
+use crate::types::{Finding, RedTeamId, Severity};
 
 // ─── Pre-compiled Regexes ──────────────────────────────────────
 
@@ -144,18 +144,12 @@ fn flush_pending(
     let source = pf.source.unwrap_or(RedTeamId::RtA);
     let severity = pf.severity.unwrap_or(Severity::High);
 
-    findings.push(Finding {
-        id: format!("RT-{counter:03}"),
-        severity,
-        title: pf.title,
-        sources: vec![source],
-        file_path: pf.file_path,
-        line_range: pf.line_range,
-        problem: pf.problem.unwrap_or_default(),
-        attack_scenario: pf.attack_scenario.unwrap_or_default(),
-        suggested_fix: pf.suggested_fix,
-        affected_plan_steps: Vec::new(),
-        status: FindingStatus::New,
-        impact_score: 0,
-    });
+    let mut finding = Finding::new(severity, pf.title, source, pf.file_path);
+    finding.id = format!("RT-{counter:03}");
+    finding.line_range = pf.line_range;
+    finding.problem = pf.problem.unwrap_or_default();
+    finding.attack_scenario = pf.attack_scenario.unwrap_or_default();
+    finding.suggested_fix = pf.suggested_fix;
+
+    findings.push(finding);
 }
