@@ -1,0 +1,53 @@
+[package]
+name = "refine-mcp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[lib]
+name = "refine_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "refine-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# MCP protocol
+rmcp = { version = "0.16", features = ["server", "transport-io"] }
+
+# tree-sitter (0.25+ supports grammar version 15)
+tree-sitter = "0.25"
+tree-sitter-php = "0.24"
+tree-sitter-rust = "0.23"
+
+# Serialization & Schema
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# String similarity (for dedup)
+strsim = "0.11"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Regex (for markdown parsing + fact extraction)
+regex = "1"
