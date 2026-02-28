@@ -90,3 +90,66 @@ fn parses_suggested_fix() {
     // Third finding (HIGH) has no fix
     assert!(findings[2].suggested_fix.is_none());
 }
+
+// ─── Tests for varied LLM output formats ────────────────────
+
+#[test]
+fn varied_parses_all_findings() {
+    let md = include_str!("fixtures/sample_rt_output_varied.md");
+    let findings = parse_red_team_output(md).expect("parse should succeed");
+
+    // RT-A: 2 FATAL + 1 HIGH, RT-B: 1 FATAL + 1 HIGH = 5 total
+    assert_eq!(findings.len(), 5);
+}
+
+#[test]
+fn varied_backtick_wrapped_file_ref() {
+    let md = include_str!("fixtures/sample_rt_output_varied.md");
+    let findings = parse_red_team_output(md).expect("parse should succeed");
+
+    // Format: (`watcher.rs:137`)
+    assert_eq!(findings[0].file_path.to_str().unwrap(), "watcher.rs");
+    assert_eq!(findings[0].line_range, Some((137, 137)));
+    assert!(findings[0].title.contains("Race condition"));
+}
+
+#[test]
+fn varied_l_prefix_line_numbers() {
+    let md = include_str!("fixtures/sample_rt_output_varied.md");
+    let findings = parse_red_team_output(md).expect("parse should succeed");
+
+    // Format: (watcher.rs:L200-L215)
+    assert_eq!(findings[1].file_path.to_str().unwrap(), "watcher.rs");
+    assert_eq!(findings[1].line_range, Some((200, 215)));
+}
+
+#[test]
+fn varied_multi_file_no_line_number() {
+    let md = include_str!("fixtures/sample_rt_output_varied.md");
+    let findings = parse_red_team_output(md).expect("parse should succeed");
+
+    // Format: (handlers.rs, watcher.rs) — takes first file, no line range
+    assert_eq!(findings[2].file_path.to_str().unwrap(), "handlers.rs");
+    assert_eq!(findings[2].line_range, None);
+}
+
+#[test]
+fn varied_standard_single_line() {
+    let md = include_str!("fixtures/sample_rt_output_varied.md");
+    let findings = parse_red_team_output(md).expect("parse should succeed");
+
+    // Format: (format.rs:111) — standard, single line
+    assert_eq!(findings[3].file_path.to_str().unwrap(), "format.rs");
+    assert_eq!(findings[3].line_range, Some((111, 111)));
+}
+
+#[test]
+fn varied_multi_file_high_severity() {
+    let md = include_str!("fixtures/sample_rt_output_varied.md");
+    let findings = parse_red_team_output(md).expect("parse should succeed");
+
+    // Format: (config.rs, state.rs, handlers.rs) — multi-file, takes first
+    assert_eq!(findings[4].file_path.to_str().unwrap(), "config.rs");
+    assert_eq!(findings[4].line_range, None);
+    assert_eq!(findings[4].severity, Severity::High);
+}

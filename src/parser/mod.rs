@@ -15,9 +15,17 @@ static RE_SOURCE_HEADER: LazyLock<Regex> =
 static RE_SEVERITY_HEADER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^###\s+(FATAL|HIGH)").expect("valid regex"));
 
-/// Matches `1. **title** (path/to/file.php:123-456)` or `(path:123)`
+/// Matches finding headers in multiple LLM output formats:
+///
+/// - Standard:         `1. **title** (file.rs:123-456)`
+/// - Backtick-wrapped: 1. **title** (`` `file.rs:137` ``)
+/// - L-prefixed:       `1. **title** (file.rs:L137)`
+/// - Multi-file:       `1. **title** (file.rs, other.rs)`
+/// - No line number:   `1. **title** (file.rs)`
+///
+/// Captures: (1)=title, (2)=first file path, (3)=start line?, (4)=end line?
 static RE_FINDING_HEADER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\d+\.\s+\*\*(.+?)\*\*\s+\(([^:)]+):(\d+)(?:-(\d+))?\)")
+    Regex::new(r"^\d+\.\s+\*\*(.+?)\*\*\s+\(`?([^:,`)\s]+)(?::L?(\d+)(?:-L?(\d+))?)?")
         .expect("valid regex")
 });
 
@@ -81,17 +89,20 @@ pub fn parse_red_team_output(md: &str) -> anyhow::Result<Vec<Finding>> {
 
             let title = caps[1].to_string();
             let file_path = PathBuf::from(&caps[2]);
-            let start_line: u32 = caps[3].parse().unwrap_or(0);
-            let end_line: u32 = caps
-                .get(4)
-                .map_or(start_line, |m| m.as_str().parse().unwrap_or(start_line));
+            let line_range = caps.get(3).map(|start_m| {
+                let start: u32 = start_m.as_str().parse().unwrap_or(0);
+                let end: u32 = caps
+                    .get(4)
+                    .map_or(start, |m| m.as_str().parse().unwrap_or(start));
+                (start, end)
+            });
 
             pending = Some(PartialFinding {
                 source: current_source,
                 severity: current_severity,
                 title,
                 file_path,
-                line_range: Some((start_line, end_line)),
+                line_range,
                 problem: None,
                 attack_scenario: None,
                 suggested_fix: None,
