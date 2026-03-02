@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 pub struct FactTable {
     pub file: PathBuf,
     pub language: Language,
+    #[serde(default)]
     pub functions: Vec<FunctionFact>,
+    #[serde(default)]
     pub warnings: Vec<String>,
 }
 
@@ -19,17 +21,26 @@ pub enum Language {
 }
 
 /// Facts about a single function/method.
+///
+/// All `Vec` and `bool` fields use `#[serde(default)]` because the JSON may
+/// pass through an LLM orchestrator that drops empty arrays or `false` values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionFact {
     pub name: String,
     pub line_range: (u32, u32),
     pub return_type: Option<String>,
+    #[serde(default)]
     pub parameters: Vec<ParamFact>,
     pub transaction: Option<TransactionFact>,
+    #[serde(default)]
     pub locks: Vec<LockFact>,
+    #[serde(default)]
     pub catch_blocks: Vec<CatchFact>,
+    #[serde(default)]
     pub external_calls: Vec<ExternalCallFact>,
+    #[serde(default)]
     pub state_mutations: Vec<MutationFact>,
+    #[serde(default)]
     pub null_risks: Vec<NullRiskFact>,
 }
 
@@ -37,12 +48,14 @@ pub struct FunctionFact {
 pub struct ParamFact {
     pub name: String,
     pub type_hint: Option<String>,
+    #[serde(default)]
     pub nullable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionFact {
     pub line_range: (u32, u32),
+    #[serde(default)]
     pub has_lock_for_update: bool,
 }
 
@@ -65,6 +78,7 @@ pub struct CatchFact {
     pub line: u32,
     pub catches: String,
     pub action: CatchAction,
+    #[serde(default)]
     pub side_effects_before: Vec<String>,
 }
 
@@ -82,6 +96,7 @@ pub enum CatchAction {
 pub struct ExternalCallFact {
     pub line: u32,
     pub target: String,
+    #[serde(default)]
     pub in_transaction: bool,
     pub description: Option<String>,
 }
