@@ -2,6 +2,8 @@
 
 **Grounded red-blue adversarial plan refinement via MCP.**
 
+[繁體中文說明](docs/README_zh-TW.md)
+
 Tree-sitter extracts structured facts from your code. LLM red teams find vulnerabilities in those facts. A blue team cross-analyzes and filters false positives. All orchestrated through the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 ## How It Works
@@ -57,7 +59,7 @@ Each extractor produces a `FactTable` containing per-function analysis:
 ### From source
 
 ```bash
-git clone https://github.com/user/refine-mcp.git
+git clone https://github.com/gisstw/refine-mcp.git
 cd refine-mcp
 cargo build --release
 # Binary at target/release/refine-mcp
