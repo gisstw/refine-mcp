@@ -110,10 +110,12 @@ fn detects_state_mutations() {
 
     // modifyReservation: 1 update
     let modify = &table.functions[2];
-    assert!(modify
-        .state_mutations
-        .iter()
-        .any(|m| m.kind == MutationKind::Update));
+    assert!(
+        modify
+            .state_mutations
+            .iter()
+            .any(|m| m.kind == MutationKind::Update)
+    );
 }
 
 #[test]

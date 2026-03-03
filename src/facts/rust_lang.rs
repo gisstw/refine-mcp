@@ -81,11 +81,7 @@ pub fn extract_rust_facts(path: &Path, source: &str) -> anyhow::Result<FactTable
 // ─── AST Walking ───────────────────────────────────────────────
 
 /// Walk the AST to find all `function_item` nodes.
-fn collect_functions(
-    node: tree_sitter::Node,
-    source: &[u8],
-    functions: &mut Vec<FunctionFact>,
-) {
+fn collect_functions(node: tree_sitter::Node, source: &[u8], functions: &mut Vec<FunctionFact>) {
     if node.kind() == "function_item" {
         if let Some(fact) = extract_function_fact(node, source) {
             functions.push(fact);
@@ -247,8 +243,7 @@ fn extract_catch_blocks(fn_text: &str, base_line: u32) -> Vec<CatchFact> {
                 CatchAction::LogAndReturn
             } else if block_text.contains("tracing::") || block_text.contains("log::") {
                 CatchAction::LogAndContinue
-            } else if block_text.contains("return Ok(") || block_text.contains("Default::default")
-            {
+            } else if block_text.contains("return Ok(") || block_text.contains("Default::default") {
                 CatchAction::ReturnDefault
             } else {
                 CatchAction::SilentSwallow

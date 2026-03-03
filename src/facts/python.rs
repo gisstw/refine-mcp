@@ -21,8 +21,7 @@ fn external_call_patterns() -> &'static [ExternalCallPattern] {
     PATTERNS.get_or_init(|| {
         vec![
             ExternalCallPattern {
-                regex: Regex::new(r"requests\.(get|post|put|delete|patch)\(")
-                    .expect("valid regex"),
+                regex: Regex::new(r"requests\.(get|post|put|delete|patch)\(").expect("valid regex"),
                 description: "requests HTTP call",
             },
             ExternalCallPattern {
@@ -78,11 +77,7 @@ pub fn extract_python_facts(path: &Path, source: &str) -> anyhow::Result<FactTab
 
 // ─── AST Walking ───────────────────────────────────────────────
 
-fn collect_functions(
-    node: tree_sitter::Node,
-    source: &[u8],
-    functions: &mut Vec<FunctionFact>,
-) {
+fn collect_functions(node: tree_sitter::Node, source: &[u8], functions: &mut Vec<FunctionFact>) {
     if node.kind() == "function_definition" {
         if let Some(fact) = extract_function_fact(node, source) {
             functions.push(fact);
@@ -175,10 +170,9 @@ fn extract_parameters(func: tree_sitter::Node, source: &[u8]) -> Vec<ParamFact> 
                     .and_then(|n| n.utf8_text(source).ok())
                     .map(String::from);
 
-                let nullable = type_text
-                    .as_deref()
-                    .is_some_and(|t| t.contains("Optional") || t.contains("None") || t.contains("| None"))
-                    || child.kind() == "default_parameter"
+                let nullable = type_text.as_deref().is_some_and(|t| {
+                    t.contains("Optional") || t.contains("None") || t.contains("| None")
+                }) || child.kind() == "default_parameter"
                     || child.kind() == "typed_default_parameter";
 
                 params.push(ParamFact {
@@ -383,7 +377,8 @@ fn extract_null_risks(fn_text: &str, start_line: u32) -> Vec<NullRiskFact> {
             risks.push(NullRiskFact {
                 expression: "bare except".to_string(),
                 line: start_line + i as u32,
-                reason: "bare except catches all exceptions including KeyboardInterrupt".to_string(),
+                reason: "bare except catches all exceptions including KeyboardInterrupt"
+                    .to_string(),
             });
         }
     }
@@ -416,10 +411,7 @@ fn generate_warnings(functions: &[FunctionFact], warnings: &mut Vec<String>) {
         // Silent swallow / bare except
         for c in &f.catch_blocks {
             if c.action == CatchAction::SilentSwallow {
-                warnings.push(format!(
-                    "{}: silent catch at line {}",
-                    f.name, c.line
-                ));
+                warnings.push(format!("{}: silent catch at line {}", f.name, c.line));
             }
             if c.catches.contains("bare except") {
                 warnings.push(format!(
@@ -452,17 +444,33 @@ mod tests {
             table.functions.len()
         );
         let names: Vec<&str> = table.functions.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"cancel_and_refund"), "missing cancel_and_refund: {names:?}");
-        assert!(names.contains(&"create_online_reservation"), "missing create_online_reservation: {names:?}");
-        assert!(names.contains(&"dangerous_query"), "missing dangerous_query: {names:?}");
+        assert!(
+            names.contains(&"cancel_and_refund"),
+            "missing cancel_and_refund: {names:?}"
+        );
+        assert!(
+            names.contains(&"create_online_reservation"),
+            "missing create_online_reservation: {names:?}"
+        );
+        assert!(
+            names.contains(&"dangerous_query"),
+            "missing dangerous_query: {names:?}"
+        );
     }
 
     #[test]
     fn detects_transaction() {
         let source = fixture_source();
         let table = extract_python_facts(Path::new("sample_service.py"), &source).unwrap();
-        let cancel_fn = table.functions.iter().find(|f| f.name == "cancel_and_refund").unwrap();
-        assert!(cancel_fn.transaction.is_some(), "cancel_and_refund should have a transaction");
+        let cancel_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "cancel_and_refund")
+            .unwrap();
+        assert!(
+            cancel_fn.transaction.is_some(),
+            "cancel_and_refund should have a transaction"
+        );
         assert!(
             cancel_fn.transaction.as_ref().unwrap().has_lock_for_update,
             "should detect select_for_update"
@@ -473,19 +481,30 @@ mod tests {
     fn detects_external_calls() {
         let source = fixture_source();
         let table = extract_python_facts(Path::new("sample_service.py"), &source).unwrap();
-        let cancel_fn = table.functions.iter().find(|f| f.name == "cancel_and_refund").unwrap();
+        let cancel_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "cancel_and_refund")
+            .unwrap();
         assert!(
             !cancel_fn.external_calls.is_empty(),
             "cancel_and_refund should have external calls (requests.post)"
         );
-        assert!(cancel_fn.external_calls[0].in_transaction, "requests.post is inside transaction");
+        assert!(
+            cancel_fn.external_calls[0].in_transaction,
+            "requests.post is inside transaction"
+        );
     }
 
     #[test]
     fn detects_mutations() {
         let source = fixture_source();
         let table = extract_python_facts(Path::new("sample_service.py"), &source).unwrap();
-        let create_fn = table.functions.iter().find(|f| f.name == "create_online_reservation").unwrap();
+        let create_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "create_online_reservation")
+            .unwrap();
         assert!(
             create_fn.state_mutations.len() >= 2,
             "create_online_reservation should detect 2 create mutations, found {}",
@@ -497,7 +516,11 @@ mod tests {
     fn detects_bare_except_as_catch() {
         let source = fixture_source();
         let table = extract_python_facts(Path::new("sample_service.py"), &source).unwrap();
-        let dangerous_fn = table.functions.iter().find(|f| f.name == "dangerous_query").unwrap();
+        let dangerous_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "dangerous_query")
+            .unwrap();
         assert!(
             !dangerous_fn.catch_blocks.is_empty(),
             "dangerous_query should detect bare except"
@@ -517,8 +540,15 @@ mod tests {
     fn detects_sql_injection_risk() {
         let source = fixture_source();
         let table = extract_python_facts(Path::new("sample_service.py"), &source).unwrap();
-        let dangerous_fn = table.functions.iter().find(|f| f.name == "dangerous_query").unwrap();
-        let has_sql_risk = dangerous_fn.null_risks.iter().any(|r| r.reason.contains("SQL"));
+        let dangerous_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "dangerous_query")
+            .unwrap();
+        let has_sql_risk = dangerous_fn
+            .null_risks
+            .iter()
+            .any(|r| r.reason.contains("SQL"));
         assert!(has_sql_risk, "should detect SQL string interpolation risk");
     }
 
@@ -526,7 +556,11 @@ mod tests {
     fn detects_locks() {
         let source = fixture_source();
         let table = extract_python_facts(Path::new("sample_service.py"), &source).unwrap();
-        let lock_fn = table.functions.iter().find(|f| f.name == "process_with_lock").unwrap();
+        let lock_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "process_with_lock")
+            .unwrap();
         assert!(
             !lock_fn.locks.is_empty(),
             "process_with_lock should detect Lock usage"
@@ -537,7 +571,11 @@ mod tests {
     fn detects_subprocess() {
         let source = fixture_source();
         let table = extract_python_facts(Path::new("sample_service.py"), &source).unwrap();
-        let lock_fn = table.functions.iter().find(|f| f.name == "process_with_lock").unwrap();
+        let lock_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "process_with_lock")
+            .unwrap();
         assert!(
             !lock_fn.external_calls.is_empty(),
             "process_with_lock should detect subprocess.run"
@@ -551,7 +589,10 @@ mod tests {
         // cancel_and_refund: external call inside transaction
         let has_ext_in_tx = table.warnings.iter().any(|w| w.contains("external call"));
         // dangerous_query: silent catch + bare except
-        let has_silent = table.warnings.iter().any(|w| w.contains("silent") || w.contains("bare"));
+        let has_silent = table
+            .warnings
+            .iter()
+            .any(|w| w.contains("silent") || w.contains("bare"));
         assert!(
             has_ext_in_tx || has_silent,
             "should generate warnings: {:?}",

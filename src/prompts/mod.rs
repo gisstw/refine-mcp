@@ -25,8 +25,12 @@ pub fn build_red_team_prompts_n(
     red_count: usize,
 ) -> Vec<RedTeamPrompt> {
     let count = red_count.clamp(2, 4);
-    let ids: Vec<RedTeamId> = [RedTeamId::RtA, RedTeamId::RtB, RedTeamId::RtC, RedTeamId::RtD]
-        [..count]
+    let ids: Vec<RedTeamId> = [
+        RedTeamId::RtA,
+        RedTeamId::RtB,
+        RedTeamId::RtC,
+        RedTeamId::RtD,
+    ][..count]
         .to_vec();
     build_red_team_prompts_selected(mode, plan_content, fact_tables, &ids)
 }
@@ -42,8 +46,7 @@ pub fn build_red_team_prompts_selected(
     fact_tables: &[FactTable],
     teams: &[RedTeamId],
 ) -> Vec<RedTeamPrompt> {
-    let facts_json =
-        serde_json::to_string_pretty(fact_tables).unwrap_or_else(|_| "[]".to_string());
+    let facts_json = serde_json::to_string_pretty(fact_tables).unwrap_or_else(|_| "[]".to_string());
 
     teams
         .iter()
@@ -161,8 +164,7 @@ pub fn build_blue_team_prompt(
     findings: &[Finding],
     plan_summary: &str,
 ) -> RedTeamPrompt {
-    let findings_json =
-        serde_json::to_string_pretty(findings).unwrap_or_else(|_| "[]".to_string());
+    let findings_json = serde_json::to_string_pretty(findings).unwrap_or_else(|_| "[]".to_string());
 
     let prompt = TEMPLATE_BLUE
         .replace("{findings_json}", &findings_json)
@@ -290,16 +292,30 @@ mod tests {
                 catch_blocks: Vec::new(),
                 external_calls: Vec::new(),
                 state_mutations: vec![
-                    MutationFact { line: 15, kind: MutationKind::Update, target: "debit".into() },
-                    MutationFact { line: 20, kind: MutationKind::Update, target: "credit".into() },
+                    MutationFact {
+                        line: 15,
+                        kind: MutationKind::Update,
+                        target: "debit".into(),
+                    },
+                    MutationFact {
+                        line: 20,
+                        kind: MutationKind::Update,
+                        target: "credit".into(),
+                    },
                 ],
                 null_risks: Vec::new(),
             }],
             warnings: vec![],
         }];
         let teams = auto_select_red_teams(&facts);
-        assert!(teams.contains(&RedTeamId::RtC), "should add RT-C for unprotected mutations");
-        assert!(!teams.contains(&RedTeamId::RtD), "should not add RT-D without auth signals");
+        assert!(
+            teams.contains(&RedTeamId::RtC),
+            "should add RT-C for unprotected mutations"
+        );
+        assert!(
+            !teams.contains(&RedTeamId::RtD),
+            "should not add RT-D without auth signals"
+        );
     }
 
     #[test]
@@ -311,7 +327,10 @@ mod tests {
             warnings: vec![],
         }];
         let teams = auto_select_red_teams(&facts);
-        assert!(teams.contains(&RedTeamId::RtD), "should add RT-D for auth-related files");
+        assert!(
+            teams.contains(&RedTeamId::RtD),
+            "should add RT-D for auth-related files"
+        );
     }
 
     #[test]
@@ -325,7 +344,10 @@ mod tests {
                 line_range: (10, 50),
                 return_type: None,
                 parameters: Vec::new(),
-                transaction: Some(TransactionFact { line_range: (12, 48), has_lock_for_update: false }),
+                transaction: Some(TransactionFact {
+                    line_range: (12, 48),
+                    has_lock_for_update: false,
+                }),
                 locks: Vec::new(),
                 catch_blocks: Vec::new(),
                 external_calls: vec![ExternalCallFact {
@@ -340,41 +362,59 @@ mod tests {
             warnings: vec![],
         }];
         let teams = auto_select_red_teams(&facts);
-        assert!(teams.contains(&RedTeamId::RtC), "external call in tx → RT-C");
+        assert!(
+            teams.contains(&RedTeamId::RtC),
+            "external call in tx → RT-C"
+        );
     }
 
     #[test]
     fn auto_select_full_suite() {
-        use crate::facts::types::{CatchFact, CatchAction, MutationFact, MutationKind};
-        let facts = vec![
-            FactTable {
-                file: PathBuf::from("app/Http/Middleware/SessionGuard.php"),
-                language: Language::Php,
-                functions: vec![FunctionFact {
-                    name: "handle".to_string(),
-                    line_range: (5, 30),
-                    return_type: None,
-                    parameters: Vec::new(),
-                    transaction: None,
-                    locks: Vec::new(),
-                    catch_blocks: vec![CatchFact {
-                        line: 20, catches: "Exception".into(),
-                        action: CatchAction::SilentSwallow,
-                        side_effects_before: vec![],
-                    }],
-                    external_calls: Vec::new(),
-                    state_mutations: vec![
-                        MutationFact { line: 10, kind: MutationKind::Create, target: "a".into() },
-                        MutationFact { line: 15, kind: MutationKind::Update, target: "b".into() },
-                    ],
-                    null_risks: Vec::new(),
+        use crate::facts::types::{CatchAction, CatchFact, MutationFact, MutationKind};
+        let facts = vec![FactTable {
+            file: PathBuf::from("app/Http/Middleware/SessionGuard.php"),
+            language: Language::Php,
+            functions: vec![FunctionFact {
+                name: "handle".to_string(),
+                line_range: (5, 30),
+                return_type: None,
+                parameters: Vec::new(),
+                transaction: None,
+                locks: Vec::new(),
+                catch_blocks: vec![CatchFact {
+                    line: 20,
+                    catches: "Exception".into(),
+                    action: CatchAction::SilentSwallow,
+                    side_effects_before: vec![],
                 }],
-                warnings: vec![],
-            },
-        ];
+                external_calls: Vec::new(),
+                state_mutations: vec![
+                    MutationFact {
+                        line: 10,
+                        kind: MutationKind::Create,
+                        target: "a".into(),
+                    },
+                    MutationFact {
+                        line: 15,
+                        kind: MutationKind::Update,
+                        target: "b".into(),
+                    },
+                ],
+                null_risks: Vec::new(),
+            }],
+            warnings: vec![],
+        }];
         let teams = auto_select_red_teams(&facts);
         assert_eq!(teams.len(), 4, "should select all 4 teams: {teams:?}");
-        assert_eq!(teams, vec![RedTeamId::RtA, RedTeamId::RtB, RedTeamId::RtC, RedTeamId::RtD]);
+        assert_eq!(
+            teams,
+            vec![
+                RedTeamId::RtA,
+                RedTeamId::RtB,
+                RedTeamId::RtC,
+                RedTeamId::RtD
+            ]
+        );
     }
 
     #[test]

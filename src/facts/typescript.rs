@@ -11,12 +11,12 @@ use super::types::{
 
 // ─── Pre-compiled Regexes ──────────────────────────────────────
 
-static RE_AWAIT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bawait\b").expect("valid regex"));
+static RE_AWAIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bawait\b").expect("valid regex"));
 
 #[allow(dead_code)] // reserved for future Promise chain detection
-static RE_PROMISE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\.then\(|Promise\.(all|race|any|allSettled)\(").expect("valid regex"));
+static RE_PROMISE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\.then\(|Promise\.(all|race|any|allSettled)\(").expect("valid regex")
+});
 
 struct ExternalCallPattern {
     regex: Regex,
@@ -36,7 +36,8 @@ fn external_call_patterns() -> &'static [ExternalCallPattern] {
                 description: "axios HTTP call",
             },
             ExternalCallPattern {
-                regex: Regex::new(r"\.(get|post|put|delete|patch)\(.*https?://").expect("valid regex"),
+                regex: Regex::new(r"\.(get|post|put|delete|patch)\(.*https?://")
+                    .expect("valid regex"),
                 description: "HTTP call",
             },
         ]
@@ -81,11 +82,7 @@ pub fn extract_ts_facts(path: &Path, source: &str) -> anyhow::Result<FactTable> 
 // ─── AST Walking ───────────────────────────────────────────────
 
 /// Walk the AST to find function-like nodes.
-fn collect_functions(
-    node: tree_sitter::Node,
-    source: &[u8],
-    functions: &mut Vec<FunctionFact>,
-) {
+fn collect_functions(node: tree_sitter::Node, source: &[u8], functions: &mut Vec<FunctionFact>) {
     match node.kind() {
         // Named functions: function foo() {}
         "function_declaration" | "method_definition" | "function" => {
@@ -480,36 +477,63 @@ mod tests {
             table.functions.len()
         );
         let names: Vec<&str> = table.functions.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"cancelAndRefund"), "missing cancelAndRefund: {names:?}");
-        assert!(names.contains(&"modifyReservation"), "missing modifyReservation: {names:?}");
-        assert!(names.contains(&"processPayment"), "missing processPayment: {names:?}");
+        assert!(
+            names.contains(&"cancelAndRefund"),
+            "missing cancelAndRefund: {names:?}"
+        );
+        assert!(
+            names.contains(&"modifyReservation"),
+            "missing modifyReservation: {names:?}"
+        );
+        assert!(
+            names.contains(&"processPayment"),
+            "missing processPayment: {names:?}"
+        );
     }
 
     #[test]
     fn detects_transaction() {
         let source = fixture_source();
         let table = extract_ts_facts(Path::new("sample_service.ts"), &source).unwrap();
-        let cancel_fn = table.functions.iter().find(|f| f.name == "cancelAndRefund").unwrap();
-        assert!(cancel_fn.transaction.is_some(), "cancelAndRefund should have a transaction");
+        let cancel_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "cancelAndRefund")
+            .unwrap();
+        assert!(
+            cancel_fn.transaction.is_some(),
+            "cancelAndRefund should have a transaction"
+        );
     }
 
     #[test]
     fn detects_external_calls() {
         let source = fixture_source();
         let table = extract_ts_facts(Path::new("sample_service.ts"), &source).unwrap();
-        let cancel_fn = table.functions.iter().find(|f| f.name == "cancelAndRefund").unwrap();
+        let cancel_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "cancelAndRefund")
+            .unwrap();
         assert!(
             !cancel_fn.external_calls.is_empty(),
             "cancelAndRefund should have external calls (fetch)"
         );
-        assert!(cancel_fn.external_calls[0].in_transaction, "fetch is inside transaction");
+        assert!(
+            cancel_fn.external_calls[0].in_transaction,
+            "fetch is inside transaction"
+        );
     }
 
     #[test]
     fn detects_mutations() {
         let source = fixture_source();
         let table = extract_ts_facts(Path::new("sample_service.ts"), &source).unwrap();
-        let modify_fn = table.functions.iter().find(|f| f.name == "modifyReservation").unwrap();
+        let modify_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "modifyReservation")
+            .unwrap();
         assert!(
             modify_fn.state_mutations.len() >= 1,
             "modifyReservation should detect update mutation"
@@ -521,14 +545,25 @@ mod tests {
         let source = fixture_source();
         let table = extract_ts_facts(Path::new("sample_service.ts"), &source).unwrap();
         // cancelAndRefund uses reservation!.paymentId (non-null assertion)
-        let cancel_fn = table.functions.iter().find(|f| f.name == "cancelAndRefund").unwrap();
+        let cancel_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "cancelAndRefund")
+            .unwrap();
         assert!(
             !cancel_fn.null_risks.is_empty(),
             "should detect non-null assertion (!)"
         );
         // processPayment uses `as any`
-        let process_fn = table.functions.iter().find(|f| f.name == "processPayment").unwrap();
-        let has_as_any = process_fn.null_risks.iter().any(|r| r.reason.contains("as any"));
+        let process_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "processPayment")
+            .unwrap();
+        let has_as_any = process_fn
+            .null_risks
+            .iter()
+            .any(|r| r.reason.contains("as any"));
         assert!(has_as_any, "should detect 'as any' cast");
     }
 
@@ -536,9 +571,16 @@ mod tests {
     fn detects_catch_blocks() {
         let source = fixture_source();
         let table = extract_ts_facts(Path::new("sample_service.ts"), &source).unwrap();
-        let cancel_fn = table.functions.iter().find(|f| f.name == "cancelAndRefund").unwrap();
+        let cancel_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "cancelAndRefund")
+            .unwrap();
         assert_eq!(cancel_fn.catch_blocks.len(), 1);
-        assert_eq!(cancel_fn.catch_blocks[0].action, CatchAction::LogAndContinue);
+        assert_eq!(
+            cancel_fn.catch_blocks[0].action,
+            CatchAction::LogAndContinue
+        );
     }
 
     #[test]
@@ -560,8 +602,15 @@ mod tests {
     fn detects_parameters() {
         let source = fixture_source();
         let table = extract_ts_facts(Path::new("sample_service.ts"), &source).unwrap();
-        let process_fn = table.functions.iter().find(|f| f.name == "processPayment").unwrap();
-        assert!(process_fn.parameters.len() >= 2, "should have amount and token params");
+        let process_fn = table
+            .functions
+            .iter()
+            .find(|f| f.name == "processPayment")
+            .unwrap();
+        assert!(
+            process_fn.parameters.len() >= 2,
+            "should have amount and token params"
+        );
         let token_param = process_fn.parameters.iter().find(|p| p.name == "token");
         assert!(token_param.is_some(), "should find token param");
         if let Some(t) = token_param {

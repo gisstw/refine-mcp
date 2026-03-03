@@ -40,8 +40,9 @@ static RE_ATTACK: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Matches `   - 建議修復：...` or `   - Suggested fix: ...`
-static RE_FIX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s+-\s+(?:建議修復|Suggested [Ff]ix)[：:](.+)").expect("valid regex"));
+static RE_FIX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s+-\s+(?:建議修復|Suggested [Ff]ix)[：:](.+)").expect("valid regex")
+});
 
 // ─── Public API ────────────────────────────────────────────────
 

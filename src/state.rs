@@ -4,7 +4,6 @@ use anyhow::Context;
 
 use crate::types::{Finding, FindingStatus};
 
-
 /// Persistent state across refine runs.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct RefineState {
@@ -30,8 +29,9 @@ impl RefineState {
     /// - Permission denied → Err
     pub fn load_from(path: &Path) -> anyhow::Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(content) => serde_json::from_str(&content)
-                .context("State file corrupted — JSON parse failed"),
+            Ok(content) => {
+                serde_json::from_str(&content).context("State file corrupted — JSON parse failed")
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).context("Failed to read state file"),
         }
@@ -52,10 +52,8 @@ impl RefineState {
         }
         let json = serde_json::to_string_pretty(self)?;
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, &json)
-            .context("Failed to write temp state file")?;
-        std::fs::rename(&tmp, path)
-            .context("Failed to atomic-rename state file")?;
+        std::fs::write(&tmp, &json).context("Failed to write temp state file")?;
+        std::fs::rename(&tmp, path).context("Failed to atomic-rename state file")?;
         Ok(())
     }
 
@@ -100,7 +98,12 @@ impl RefineState {
     pub fn active_findings(&self) -> Vec<&Finding> {
         self.findings
             .iter()
-            .filter(|f| !matches!(f.status, FindingStatus::Fixed | FindingStatus::FalsePositive))
+            .filter(|f| {
+                !matches!(
+                    f.status,
+                    FindingStatus::Fixed | FindingStatus::FalsePositive
+                )
+            })
             .collect()
     }
 }
@@ -224,7 +227,8 @@ mod tests {
 
     #[test]
     fn load_from_nonexistent_returns_default() {
-        let state = RefineState::load_from(Path::new("/tmp/refine_nonexistent_12345.json")).unwrap();
+        let state =
+            RefineState::load_from(Path::new("/tmp/refine_nonexistent_12345.json")).unwrap();
         assert_eq!(state.findings.len(), 0);
         assert_eq!(state.run_count, 0);
     }

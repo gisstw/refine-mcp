@@ -217,9 +217,7 @@ fn extract_transaction(method_text: &str, base_line: u32) -> Option<TransactionF
         return None;
     }
     let lines: Vec<&str> = method_text.lines().collect();
-    let start = lines
-        .iter()
-        .position(|l| l.contains("DB::transaction"))?;
+    let start = lines.iter().position(|l| l.contains("DB::transaction"))?;
     let has_lock = method_text.contains("lockForUpdate");
     #[allow(clippy::cast_possible_truncation)]
     Some(TransactionFact {
@@ -312,8 +310,10 @@ fn walk_for_catch(
 /// Scan lines before a catch block for DB side effects (create/save/update/insert/delete).
 fn extract_side_effects_before(method_text: &str, catch_line: u32, base_line: u32) -> Vec<String> {
     static RE_SIDE_EFFECT: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(::|->)(create|save|update|delete|insert|bulk_create)\(|DB::(insert|update|delete)\(")
-            .expect("valid regex")
+        Regex::new(
+            r"(::|->)(create|save|update|delete|insert|bulk_create)\(|DB::(insert|update|delete)\(",
+        )
+        .expect("valid regex")
     });
 
     let catch_offset = catch_line.saturating_sub(base_line) as usize;
@@ -442,9 +442,8 @@ fn generate_n_plus_one_warnings(
     functions: &[FunctionFact],
     warnings: &mut Vec<String>,
 ) {
-    static RE_LOOP_START: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"\b(foreach|for)\s*\(").expect("valid regex")
-    });
+    static RE_LOOP_START: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\b(foreach|for)\s*\(").expect("valid regex"));
     static RE_QUERY_IN_LOOP: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"::(find|where|get|first|all|with|has)\(|->load\(|DB::(select|table)\(")
             .expect("valid regex")

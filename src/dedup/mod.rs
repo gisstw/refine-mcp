@@ -27,13 +27,11 @@ pub fn dedup_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
     // Sort by (file_path, line_start) for locality — enables O(n·k) merge
     // where k is the look-back window (constant) instead of O(n²)
     findings.sort_by(|a, b| {
-        a.file_path
-            .cmp(&b.file_path)
-            .then_with(|| {
-                let a_start = a.line_range.map_or(0, |r| r.0);
-                let b_start = b.line_range.map_or(0, |r| r.0);
-                a_start.cmp(&b_start)
-            })
+        a.file_path.cmp(&b.file_path).then_with(|| {
+            let a_start = a.line_range.map_or(0, |r| r.0);
+            let b_start = b.line_range.map_or(0, |r| r.0);
+            a_start.cmp(&b_start)
+        })
     });
 
     let mut merged: Vec<Finding> = Vec::with_capacity(findings.len());
@@ -225,8 +223,17 @@ mod tests {
 
     #[test]
     fn domain_weight_order() {
-        assert!(domain_weight("app/Services/PaymentService.php") > domain_weight("app/Services/ReservationService.php"));
-        assert!(domain_weight("app/Services/ReservationService.php") > domain_weight("app/Http/Controllers/FooController.php"));
-        assert!(domain_weight("app/Http/Controllers/FooController.php") > domain_weight("resources/views/dashboard.blade.php"));
+        assert!(
+            domain_weight("app/Services/PaymentService.php")
+                > domain_weight("app/Services/ReservationService.php")
+        );
+        assert!(
+            domain_weight("app/Services/ReservationService.php")
+                > domain_weight("app/Http/Controllers/FooController.php")
+        );
+        assert!(
+            domain_weight("app/Http/Controllers/FooController.php")
+                > domain_weight("resources/views/dashboard.blade.php")
+        );
     }
 }

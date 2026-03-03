@@ -100,12 +100,17 @@ impl RefineServer {
     // ── Tool 1: discover_plan ──────────────────────────────────
 
     /// Find the most recently modified plan file in the given directory.
-    #[tool(description = "Discover the most recently modified plan file in .claude/plans/ and extract referenced source file paths")]
+    #[tool(
+        description = "Discover the most recently modified plan file in .claude/plans/ and extract referenced source file paths"
+    )]
     async fn discover_plan(
         &self,
         params: Parameters<DiscoverPlanParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let dir = params.0.plan_dir.unwrap_or_else(|| ".claude/plans".to_string());
+        let dir = params
+            .0
+            .plan_dir
+            .unwrap_or_else(|| ".claude/plans".to_string());
         let dir_path = PathBuf::from(&dir);
 
         if !dir_path.is_dir() {
@@ -161,12 +166,17 @@ impl RefineServer {
     // ── Tool 1b: discover_and_extract ──────────────────────────
 
     /// Discover plan + extract facts in a single step (saves 1 MCP round-trip).
-    #[tool(description = "Discover the latest plan file, extract referenced source paths, and run tree-sitter fact extraction — all in one call")]
+    #[tool(
+        description = "Discover the latest plan file, extract referenced source paths, and run tree-sitter fact extraction — all in one call"
+    )]
     async fn discover_and_extract(
         &self,
         params: Parameters<DiscoverAndExtractParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let dir = params.0.plan_dir.unwrap_or_else(|| ".claude/plans".to_string());
+        let dir = params
+            .0
+            .plan_dir
+            .unwrap_or_else(|| ".claude/plans".to_string());
         let diff_only = params.0.diff_only.unwrap_or(false);
         let dir_path = PathBuf::from(&dir);
 
@@ -236,8 +246,9 @@ impl RefineServer {
             let result = match path.extension().and_then(|e| e.to_str()) {
                 Some("php") => refine_mcp::facts::php::extract_php_facts(&path, &source),
                 Some("rs") => refine_mcp::facts::rust_lang::extract_rust_facts(&path, &source),
-                Some("ts") | Some("tsx") | Some("js") | Some("jsx") =>
-                    refine_mcp::facts::typescript::extract_ts_facts(&path, &source),
+                Some("ts") | Some("tsx") | Some("js") | Some("jsx") => {
+                    refine_mcp::facts::typescript::extract_ts_facts(&path, &source)
+                }
                 Some("py") => refine_mcp::facts::python::extract_python_facts(&path, &source),
                 Some(ext) => {
                     errors.push(format!("Unsupported language: .{ext} ({file_path_str})"));
@@ -285,7 +296,9 @@ impl RefineServer {
     // ── Tool 2: extract_facts ──────────────────────────────────
 
     /// Extract structured facts from source files using tree-sitter.
-    #[tool(description = "Extract structured facts from source files using tree-sitter analysis. Returns JSON fact tables.")]
+    #[tool(
+        description = "Extract structured facts from source files using tree-sitter analysis. Returns JSON fact tables."
+    )]
     async fn extract_facts(
         &self,
         params: Parameters<ExtractFactsParams>,
@@ -323,8 +336,9 @@ impl RefineServer {
             let result = match path.extension().and_then(|e| e.to_str()) {
                 Some("php") => refine_mcp::facts::php::extract_php_facts(&path, &source),
                 Some("rs") => refine_mcp::facts::rust_lang::extract_rust_facts(&path, &source),
-                Some("ts") | Some("tsx") | Some("js") | Some("jsx") =>
-                    refine_mcp::facts::typescript::extract_ts_facts(&path, &source),
+                Some("ts") | Some("tsx") | Some("js") | Some("jsx") => {
+                    refine_mcp::facts::typescript::extract_ts_facts(&path, &source)
+                }
                 Some("py") => refine_mcp::facts::python::extract_python_facts(&path, &source),
                 Some(ext) => {
                     errors.push(format!("Unsupported language: .{ext} ({file_path_str})"));
@@ -371,7 +385,9 @@ impl RefineServer {
     // ── Tool 3: prepare_attack ─────────────────────────────────
 
     /// Assemble red team prompts from plan content and fact tables.
-    #[tool(description = "Prepare red team attack prompts from plan and extracted facts. Returns prompts with model recommendations.")]
+    #[tool(
+        description = "Prepare red team attack prompts from plan and extracted facts. Returns prompts with model recommendations."
+    )]
     async fn prepare_attack(
         &self,
         params: Parameters<PrepareAttackParams>,
@@ -425,7 +441,9 @@ impl RefineServer {
     // ── Tool 4: synthesize_findings ────────────────────────────
 
     /// Parse, validate, dedup, and rank red team findings.
-    #[tool(description = "Synthesize red team reports: parse markdown, dedup, validate, rank, merge with persistent state, generate blue team prompt")]
+    #[tool(
+        description = "Synthesize red team reports: parse markdown, dedup, validate, rank, merge with persistent state, generate blue team prompt"
+    )]
     async fn synthesize_findings(
         &self,
         params: Parameters<SynthesizeFindingsParams>,
@@ -508,7 +526,9 @@ impl RefineServer {
     // ── Tool 5: finalize_refinement ────────────────────────────
 
     /// Write refinement section to plan file.
-    #[tool(description = "Backup plan and append refinement section with findings and blue team analysis")]
+    #[tool(
+        description = "Backup plan and append refinement section with findings and blue team analysis"
+    )]
     async fn finalize_refinement(
         &self,
         params: Parameters<FinalizeRefinementParams>,
@@ -617,8 +637,8 @@ fn parse_mode(mode_str: Option<&str>) -> Result<RefineMode, rmcp::ErrorData> {
 
 /// Extract file paths referenced in a plan markdown document.
 fn extract_file_references(content: &str) -> Vec<String> {
-    use std::sync::LazyLock;
     use regex::Regex;
+    use std::sync::LazyLock;
 
     static RE_FILE_REF: LazyLock<Regex> = LazyLock::new(|| {
         // Match relative paths (app/..., src/...) and absolute paths (/home/..., /var/...)
@@ -655,11 +675,7 @@ fn generate_refinement_section(
     let mut out = String::with_capacity(2048);
     writeln!(out, "---").ok();
     writeln!(out, "## 🔴 Refinement（紅藍對抗精鍊）").ok();
-    writeln!(
-        out,
-        "> Refined: {now} | Mode: {mode:?} | Agents: 2R+1B"
-    )
-    .ok();
+    writeln!(out, "> Refined: {now} | Mode: {mode:?} | Agents: 2R+1B").ok();
     writeln!(out).ok();
     writeln!(out, "### 發現摘要").ok();
     writeln!(out, "- FATAL: {fatal_count} 個").ok();
@@ -758,7 +774,12 @@ fn git_changed_files() -> Vec<String> {
 /// Get current date as YYYY-MM-DD string.
 fn date_today() -> String {
     let now = time::OffsetDateTime::now_utc();
-    format!("{:04}-{:02}-{:02}", now.year(), now.month() as u8, now.day())
+    format!(
+        "{:04}-{:02}-{:02}",
+        now.year(),
+        now.month() as u8,
+        now.day()
+    )
 }
 
 // ─── Tests ─────────────────────────────────────────────────────
@@ -790,17 +811,20 @@ mod tests {
     fn extracts_relative_paths() {
         let content = "Modify `app/Services/BillingService.php` and `src/main.rs` here.";
         let refs = extract_file_references(content);
-        assert_eq!(refs, vec![
-            "app/Services/BillingService.php",
-            "src/main.rs",
-        ]);
+        assert_eq!(
+            refs,
+            vec!["app/Services/BillingService.php", "src/main.rs",]
+        );
     }
 
     #[test]
     fn extracts_absolute_paths() {
         let content = "Source: `/home/www/project/src/main.rs` is the entry.";
         let refs = extract_file_references(content);
-        assert!(refs.iter().any(|r| r.contains("home/www/project/src/main.rs")));
+        assert!(
+            refs.iter()
+                .any(|r| r.contains("home/www/project/src/main.rs"))
+        );
     }
 
     #[test]
@@ -874,7 +898,8 @@ mod tests {
 
     #[test]
     fn refinement_section_includes_blue_result() {
-        let section = generate_refinement_section(&[], "Blue team found combo attack", RefineMode::Auto);
+        let section =
+            generate_refinement_section(&[], "Blue team found combo attack", RefineMode::Auto);
         assert!(section.contains("### 交叉分析（藍隊）"));
         assert!(section.contains("Blue team found combo attack"));
     }

@@ -15,8 +15,14 @@ fn parses_severity_correctly() {
     let md = include_str!("fixtures/sample_rt_output.md");
     let findings = parse_red_team_output(md).expect("parse should succeed");
 
-    let fatals: Vec<_> = findings.iter().filter(|f| f.severity == Severity::Fatal).collect();
-    let highs: Vec<_> = findings.iter().filter(|f| f.severity == Severity::High).collect();
+    let fatals: Vec<_> = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Fatal)
+        .collect();
+    let highs: Vec<_> = findings
+        .iter()
+        .filter(|f| f.severity == Severity::High)
+        .collect();
     assert_eq!(fatals.len(), 3);
     assert_eq!(highs.len(), 2);
 }
@@ -81,11 +87,7 @@ fn parses_suggested_fix() {
 
     // First finding has a fix suggestion
     assert!(findings[0].suggested_fix.is_some());
-    assert!(findings[0]
-        .suggested_fix
-        .as_ref()
-        .unwrap()
-        .contains("saga"));
+    assert!(findings[0].suggested_fix.as_ref().unwrap().contains("saga"));
 
     // Third finding (HIGH) has no fix
     assert!(findings[2].suggested_fix.is_none());

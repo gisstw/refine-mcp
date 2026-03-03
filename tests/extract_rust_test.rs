@@ -45,17 +45,21 @@ fn detects_sql_mutations() {
 
     // cancel_reservation: UPDATE
     let cancel = &table.functions[0];
-    assert!(cancel
-        .state_mutations
-        .iter()
-        .any(|m| m.kind == MutationKind::Update));
+    assert!(
+        cancel
+            .state_mutations
+            .iter()
+            .any(|m| m.kind == MutationKind::Update)
+    );
 
     // create_reservation: INSERT
     let create = &table.functions[1];
-    assert!(create
-        .state_mutations
-        .iter()
-        .any(|m| m.kind == MutationKind::Create));
+    assert!(
+        create
+            .state_mutations
+            .iter()
+            .any(|m| m.kind == MutationKind::Create)
+    );
 }
 
 #[test]
@@ -81,9 +85,7 @@ fn detects_unwrap_risk() {
     // with_error_handling has .unwrap()
     let handler = &table.functions[4];
     assert!(!handler.null_risks.is_empty());
-    assert!(handler.null_risks[0]
-        .expression
-        .contains("unwrap"));
+    assert!(handler.null_risks[0].expression.contains("unwrap"));
 }
 
 #[test]
@@ -104,15 +106,14 @@ fn extracts_return_types() {
     let table = extract_rust_facts(&path, source).expect("parse should succeed");
 
     // cancel_reservation -> Result<()>
-    assert!(table.functions[0]
-        .return_type
-        .as_deref()
-        .unwrap()
-        .contains("Result"));
+    assert!(
+        table.functions[0]
+            .return_type
+            .as_deref()
+            .unwrap()
+            .contains("Result")
+    );
 
     // calculate_total -> Decimal
-    assert_eq!(
-        table.functions[2].return_type.as_deref(),
-        Some("Decimal")
-    );
+    assert_eq!(table.functions[2].return_type.as_deref(), Some("Decimal"));
 }

@@ -30,8 +30,8 @@ fn self_analysis_no_panics() {
 
     for &file in OWN_FILES {
         let path = Path::new(file);
-        let source = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("Cannot read {file}: {e}"));
+        let source =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("Cannot read {file}: {e}"));
 
         let table = extract_rust_facts(path, &source)
             .unwrap_or_else(|e| panic!("Failed to extract facts from {file}: {e}"));
@@ -46,7 +46,10 @@ fn self_analysis_no_panics() {
 
     // Sanity checks — we know our own codebase has these
     assert!(total_fns > 30, "should find 30+ functions, got {total_fns}");
-    assert!(total_risks > 0, "should detect some .unwrap()/.expect() risks");
+    assert!(
+        total_risks > 0,
+        "should detect some .unwrap()/.expect() risks"
+    );
 
     eprintln!("\n=== Self-Analysis Summary ===");
     eprintln!("  Files analyzed: {}", OWN_FILES.len());
@@ -72,10 +75,7 @@ fn self_analysis_detail_report() {
             }
             for f in &table.functions {
                 for r in &f.null_risks {
-                    report.push_str(&format!(
-                        "  L{}: {} — {}\n",
-                        r.line, r.reason, r.expression
-                    ));
+                    report.push_str(&format!("  L{}: {} — {}\n", r.line, r.reason, r.expression));
                 }
             }
         }

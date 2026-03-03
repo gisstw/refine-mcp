@@ -57,12 +57,7 @@ pub struct Finding {
 impl Finding {
     /// Create a new finding with safe defaults (`status` = New, `impact_score` = 0).
     #[must_use]
-    pub fn new(
-        severity: Severity,
-        title: String,
-        source: RedTeamId,
-        file_path: PathBuf,
-    ) -> Self {
+    pub fn new(severity: Severity, title: String, source: RedTeamId, file_path: PathBuf) -> Self {
         static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self {
@@ -81,7 +76,6 @@ impl Finding {
         }
     }
 }
-
 
 // ─── Refine Mode ─────────────────────────────────────────────
 
