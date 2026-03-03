@@ -564,10 +564,7 @@ impl RefineServer {
             rmcp::ErrorData::internal_error(format!("Failed to write temp file: {e}"), None)
         })?;
         std::fs::rename(&tmp_path, &plan_path).map_err(|e| {
-            rmcp::ErrorData::internal_error(
-                format!("Failed to atomic-rename plan file: {e}"),
-                None,
-            )
+            rmcp::ErrorData::internal_error(format!("Failed to atomic-rename plan file: {e}"), None)
         })?;
 
         // Update state metadata (NO merge — synthesize_findings already merged)
