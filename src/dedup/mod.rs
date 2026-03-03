@@ -17,6 +17,10 @@ const TITLE_SIMILARITY_THRESHOLD: f64 = 0.85;
 /// - After dedup: assign impact scores
 #[must_use]
 pub fn dedup_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
+    // Only check recent entries in merged (same file, nearby lines)
+    // Look back at most LOOK_BACK items to catch nearby duplicates
+    const LOOK_BACK: usize = 10;
+
     if findings.len() <= 1 {
         for f in &mut findings {
             f.impact_score = impact_score(f);
@@ -39,9 +43,6 @@ pub fn dedup_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
     for finding in findings {
         let mut was_merged = false;
 
-        // Only check recent entries in merged (same file, nearby lines)
-        // Look back at most LOOK_BACK items to catch nearby duplicates
-        const LOOK_BACK: usize = 10;
         let start = merged.len().saturating_sub(LOOK_BACK);
         for existing in &mut merged[start..] {
             if should_merge(existing, &finding) {

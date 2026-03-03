@@ -50,16 +50,16 @@ pub fn build_red_team_prompts_selected(
 
     teams
         .iter()
-        .filter_map(|id| {
+        .map(|id| {
             let template = template_for(*id);
             let prompt = template
                 .replace("{plan_content}", plan_content)
                 .replace("{fact_tables}", &facts_json);
-            Some(RedTeamPrompt {
+            RedTeamPrompt {
                 id: *id,
                 prompt,
                 recommended_model: mode.red_model().to_string(),
-            })
+            }
         })
         .collect()
 }
@@ -132,7 +132,7 @@ pub fn auto_select_red_teams(fact_tables: &[FactTable]) -> Vec<RedTeamId> {
     teams
 }
 
-/// Build red team prompts with the mode's default red_count (always 2).
+/// Build red team prompts with the mode's default `red_count` (always 2).
 ///
 /// For configurable count, use [`build_red_team_prompts_n`].
 /// For fact-driven selection, use [`auto_select_red_teams`] + [`build_red_team_prompts_selected`].

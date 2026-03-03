@@ -61,6 +61,8 @@ fn self_analysis_no_panics() {
 
 #[test]
 fn self_analysis_detail_report() {
+    use std::fmt::Write;
+
     let mut report = String::new();
 
     for &file in OWN_FILES {
@@ -69,13 +71,13 @@ fn self_analysis_detail_report() {
         let table = extract_rust_facts(path, &source).unwrap();
 
         if !table.warnings.is_empty() || table.functions.iter().any(|f| !f.null_risks.is_empty()) {
-            report.push_str(&format!("\n--- {} ---\n", file));
+            let _ = writeln!(report, "\n--- {file} ---");
             for w in &table.warnings {
-                report.push_str(&format!("  ⚠ {w}\n"));
+                let _ = writeln!(report, "  ⚠ {w}");
             }
             for f in &table.functions {
                 for r in &f.null_risks {
-                    report.push_str(&format!("  L{}: {} — {}\n", r.line, r.reason, r.expression));
+                    let _ = writeln!(report, "  L{}: {} — {}", r.line, r.reason, r.expression);
                 }
             }
         }

@@ -330,11 +330,11 @@ fn extract_mutations(fn_text: &str, base_line: u32) -> Vec<MutationFact> {
 fn collect_sql_block(lines: &[&str], start: usize) -> String {
     let max_end = (start + 20).min(lines.len());
     let mut parts = Vec::new();
-    for j in start..max_end {
-        parts.push(lines[j]);
-        let trimmed = lines[j].trim();
+    for (offset, &line) in lines[start..max_end].iter().enumerate() {
+        parts.push(line);
+        let trimmed = line.trim();
         // Stop at common sqlx chain terminators
-        if j > start
+        if offset > 0
             && (trimmed.starts_with(".bind(")
                 || trimmed.starts_with(".fetch")
                 || trimmed.starts_with(".execute")

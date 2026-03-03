@@ -456,8 +456,7 @@ fn generate_n_plus_one_warnings(
         let fn_end = std::cmp::min(f.line_range.1 as usize, all_lines.len());
 
         let mut in_loop_depth: u32 = 0;
-        for line_idx in fn_start..fn_end {
-            let line = all_lines[line_idx];
+        for (offset, line) in all_lines[fn_start..fn_end].iter().enumerate() {
             if RE_LOOP_START.is_match(line) {
                 in_loop_depth += 1;
             }
@@ -466,7 +465,7 @@ fn generate_n_plus_one_warnings(
                 warnings.push(format!(
                     "{}: potential N+1 query at L{} (Eloquent call inside loop)",
                     f.name,
-                    line_idx as u32 + 1,
+                    (fn_start + offset) as u32 + 1,
                 ));
             }
             // Track closing braces (approximate)
@@ -474,7 +473,9 @@ fn generate_n_plus_one_warnings(
                 let opens = line.matches('{').count();
                 let closes = line.matches('}').count();
                 if closes > opens {
-                    in_loop_depth = in_loop_depth.saturating_sub((closes - opens) as u32);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let diff = (closes - opens) as u32;
+                    in_loop_depth = in_loop_depth.saturating_sub(diff);
                 }
             }
         }

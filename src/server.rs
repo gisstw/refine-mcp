@@ -29,7 +29,7 @@ pub struct DiscoverPlanParams {
 pub struct ExtractFactsParams {
     /// List of file paths to analyze
     pub file_paths: Vec<String>,
-    /// If true, filter file_paths to only those changed in `git diff HEAD`
+    /// If true, filter `file_paths` to only those changed in `git diff HEAD`
     pub diff_only: Option<bool>,
 }
 
@@ -246,7 +246,7 @@ impl RefineServer {
             let result = match path.extension().and_then(|e| e.to_str()) {
                 Some("php") => refine_mcp::facts::php::extract_php_facts(&path, &source),
                 Some("rs") => refine_mcp::facts::rust_lang::extract_rust_facts(&path, &source),
-                Some("ts") | Some("tsx") | Some("js") | Some("jsx") => {
+                Some("ts" | "tsx" | "js" | "jsx") => {
                     refine_mcp::facts::typescript::extract_ts_facts(&path, &source)
                 }
                 Some("py") => refine_mcp::facts::python::extract_python_facts(&path, &source),
@@ -336,7 +336,7 @@ impl RefineServer {
             let result = match path.extension().and_then(|e| e.to_str()) {
                 Some("php") => refine_mcp::facts::php::extract_php_facts(&path, &source),
                 Some("rs") => refine_mcp::facts::rust_lang::extract_rust_facts(&path, &source),
-                Some("ts") | Some("tsx") | Some("js") | Some("jsx") => {
+                Some("ts" | "tsx" | "js" | "jsx") => {
                     refine_mcp::facts::typescript::extract_ts_facts(&path, &source)
                 }
                 Some("py") => refine_mcp::facts::python::extract_python_facts(&path, &source),

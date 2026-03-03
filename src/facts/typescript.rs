@@ -259,11 +259,11 @@ fn extract_transaction(fn_text: &str, start_line: u32) -> Option<TransactionFact
 }
 
 fn extract_locks(fn_text: &str, start_line: u32) -> Vec<LockFact> {
-    let mut locks = Vec::new();
-
     static RE_LOCK: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i)\b(mutex|lock|semaphore|acquire)\b").expect("valid regex")
     });
+
+    let mut locks = Vec::new();
 
     for (i, line) in fn_text.lines().enumerate() {
         if RE_LOCK.is_match(line) {
@@ -334,18 +334,18 @@ fn extract_external_calls(
         }
 
         // Also catch await with fetch-like patterns
+        #[allow(clippy::cast_possible_truncation)]
+        let line_num = start_line + i as u32;
         if RE_AWAIT.is_match(line)
             && (line.contains("fetch") || line.contains("axios") || line.contains("http"))
+            && !calls.iter().any(|c| c.line == line_num)
         {
-            if !calls.iter().any(|c| c.line == start_line + i as u32) {
-                #[allow(clippy::cast_possible_truncation)]
-                calls.push(ExternalCallFact {
-                    target: line.trim().to_string(),
-                    line: start_line + i as u32,
-                    in_transaction: transaction.is_some(),
-                    description: Some("async external call".to_string()),
-                });
-            }
+            calls.push(ExternalCallFact {
+                target: line.trim().to_string(),
+                line: line_num,
+                in_transaction: transaction.is_some(),
+                description: Some("async external call".to_string()),
+            });
         }
     }
     calls
@@ -535,7 +535,7 @@ mod tests {
             .find(|f| f.name == "modifyReservation")
             .unwrap();
         assert!(
-            modify_fn.state_mutations.len() >= 1,
+            !modify_fn.state_mutations.is_empty(),
             "modifyReservation should detect update mutation"
         );
     }

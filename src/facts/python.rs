@@ -262,9 +262,8 @@ fn extract_catch_blocks(fn_text: &str, start_line: u32) -> Vec<CatchFact> {
                 CatchAction::LogAndContinue
             } else if block_text.contains("return") {
                 CatchAction::ReturnDefault
-            } else if block_text.trim_end() == "pass" || block_text.contains("\n    pass") {
-                CatchAction::SilentSwallow
             } else {
+                // Covers explicit `pass` and any other unrecognized pattern
                 CatchAction::SilentSwallow
             };
 

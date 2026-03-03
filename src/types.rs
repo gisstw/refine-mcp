@@ -115,9 +115,7 @@ impl RefineMode {
     #[must_use]
     pub fn red_count(&self) -> usize {
         match self {
-            Self::Default => 2,
-            Self::Lite => 2,
-            Self::Auto => 2,
+            Self::Default | Self::Lite | Self::Auto => 2,
         }
     }
 }
