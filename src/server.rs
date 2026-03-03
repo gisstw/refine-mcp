@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use refine_mcp::dedup::dedup_findings;
 use refine_mcp::facts::types::FactTable;
 use refine_mcp::parser::parse_red_team_output;
-use refine_mcp::prompts::{build_blue_team_prompt, build_red_team_prompts};
+use refine_mcp::prompts::build_blue_team_prompt;
 use refine_mcp::state::RefineState;
 use refine_mcp::types::RefineMode;
 
@@ -29,6 +29,8 @@ pub struct DiscoverPlanParams {
 pub struct ExtractFactsParams {
     /// List of file paths to analyze
     pub file_paths: Vec<String>,
+    /// If true, filter file_paths to only those changed in `git diff HEAD`
+    pub diff_only: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -39,6 +41,9 @@ pub struct PrepareAttackParams {
     pub facts_json: String,
     /// Refine mode: default, lite, or auto
     pub mode: Option<String>,
+    /// Number of red teams (2-4), or omit for auto-selection based on fact signals.
+    /// Auto mode analyzes the fact tables and picks relevant red team roles.
+    pub red_count: Option<u8>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -63,6 +68,14 @@ pub struct FinalizeRefinementParams {
     pub findings_json: String,
     /// Refine mode used
     pub mode: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct DiscoverAndExtractParams {
+    /// Directory to search for plan files (default: .claude/plans/)
+    pub plan_dir: Option<String>,
+    /// If true, only extract from files changed in `git diff HEAD` (incremental mode)
+    pub diff_only: Option<bool>,
 }
 
 // ─── MCP Server ────────────────────────────────────────────────
@@ -145,6 +158,130 @@ impl RefineServer {
         )]))
     }
 
+    // ── Tool 1b: discover_and_extract ──────────────────────────
+
+    /// Discover plan + extract facts in a single step (saves 1 MCP round-trip).
+    #[tool(description = "Discover the latest plan file, extract referenced source paths, and run tree-sitter fact extraction — all in one call")]
+    async fn discover_and_extract(
+        &self,
+        params: Parameters<DiscoverAndExtractParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let dir = params.0.plan_dir.unwrap_or_else(|| ".claude/plans".to_string());
+        let diff_only = params.0.diff_only.unwrap_or(false);
+        let dir_path = PathBuf::from(&dir);
+
+        if !dir_path.is_dir() {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!("Directory not found: {dir}"),
+                None,
+            ));
+        }
+
+        // ── Step 1: discover plan (same logic as discover_plan) ──
+        let mut latest: Option<(PathBuf, std::time::SystemTime)> = None;
+        let entries = std::fs::read_dir(&dir_path).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("Failed to read directory: {e}"), None)
+        })?;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "md") {
+                if let Ok(meta) = path.metadata() {
+                    if let Ok(modified) = meta.modified() {
+                        if latest.as_ref().is_none_or(|(_, t)| modified > *t) {
+                            latest = Some((path, modified));
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some((plan_path, _)) = latest else {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!("No .md files found in {dir}"),
+                None,
+            ));
+        };
+
+        let plan_content = std::fs::read_to_string(&plan_path).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("Failed to read plan: {e}"), None)
+        })?;
+        let mut file_refs = extract_file_references(&plan_content);
+
+        // ── Step 1b: if diff_only, intersect with git changed files ──
+        if diff_only {
+            let changed = git_changed_files();
+            if !changed.is_empty() {
+                file_refs.retain(|f| changed.iter().any(|c| f.ends_with(c) || c.ends_with(f)));
+            }
+        }
+
+        // ── Step 2: extract facts from referenced files ──
+        let mut tables = Vec::new();
+        let mut errors = Vec::new();
+
+        for file_path_str in &file_refs {
+            let path = PathBuf::from(file_path_str);
+            if !path.exists() {
+                errors.push(format!("File not found: {file_path_str}"));
+                continue;
+            }
+            let source = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    errors.push(format!("Failed to read {file_path_str}: {e}"));
+                    continue;
+                }
+            };
+            let result = match path.extension().and_then(|e| e.to_str()) {
+                Some("php") => refine_mcp::facts::php::extract_php_facts(&path, &source),
+                Some("rs") => refine_mcp::facts::rust_lang::extract_rust_facts(&path, &source),
+                Some("ts") | Some("tsx") | Some("js") | Some("jsx") =>
+                    refine_mcp::facts::typescript::extract_ts_facts(&path, &source),
+                Some("py") => refine_mcp::facts::python::extract_python_facts(&path, &source),
+                Some(ext) => {
+                    errors.push(format!("Unsupported language: .{ext} ({file_path_str})"));
+                    continue;
+                }
+                None => {
+                    errors.push(format!("No file extension: {file_path_str}"));
+                    continue;
+                }
+            };
+            match result {
+                Ok(table) => tables.push(table),
+                Err(e) => errors.push(format!("Parse error for {file_path_str}: {e}")),
+            }
+        }
+
+        if tables.is_empty() && !errors.is_empty() {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "All {} referenced files failed extraction: {}",
+                    errors.len(),
+                    errors.join("; ")
+                ),
+                None,
+            ));
+        }
+
+        let output = serde_json::json!({
+            "plan_path": plan_path.to_string_lossy(),
+            "plan_content": plan_content,
+            "referenced_files": file_refs,
+            "fact_tables": tables,
+            "errors": errors,
+            "file_count": tables.len(),
+            "total_functions": tables.iter().map(|t| t.functions.len()).sum::<usize>(),
+            "total_warnings": tables.iter().map(|t| t.warnings.len()).sum::<usize>(),
+            "diff_only": diff_only,
+        });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&output).unwrap_or_default(),
+        )]))
+    }
+
     // ── Tool 2: extract_facts ──────────────────────────────────
 
     /// Extract structured facts from source files using tree-sitter.
@@ -153,10 +290,21 @@ impl RefineServer {
         &self,
         params: Parameters<ExtractFactsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let diff_only = params.0.diff_only.unwrap_or(false);
+        let mut file_paths = params.0.file_paths;
+
+        // Filter to git-changed files if requested
+        if diff_only {
+            let changed = git_changed_files();
+            if !changed.is_empty() {
+                file_paths.retain(|f| changed.iter().any(|c| f.ends_with(c) || c.ends_with(f)));
+            }
+        }
+
         let mut tables = Vec::new();
         let mut errors = Vec::new();
 
-        for file_path_str in &params.0.file_paths {
+        for file_path_str in &file_paths {
             let path = PathBuf::from(file_path_str);
 
             if !path.exists() {
@@ -175,6 +323,9 @@ impl RefineServer {
             let result = match path.extension().and_then(|e| e.to_str()) {
                 Some("php") => refine_mcp::facts::php::extract_php_facts(&path, &source),
                 Some("rs") => refine_mcp::facts::rust_lang::extract_rust_facts(&path, &source),
+                Some("ts") | Some("tsx") | Some("js") | Some("jsx") =>
+                    refine_mcp::facts::typescript::extract_ts_facts(&path, &source),
+                Some("py") => refine_mcp::facts::python::extract_python_facts(&path, &source),
                 Some(ext) => {
                     errors.push(format!("Unsupported language: .{ext} ({file_path_str})"));
                     continue;
@@ -191,12 +342,25 @@ impl RefineServer {
             }
         }
 
+        // Step 2.3: Return error if ALL files failed extraction
+        if tables.is_empty() && !errors.is_empty() {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "All {} files failed extraction: {}",
+                    errors.len(),
+                    errors.join("; ")
+                ),
+                None,
+            ));
+        }
+
         let output = serde_json::json!({
             "fact_tables": tables,
             "errors": errors,
             "file_count": tables.len(),
             "total_functions": tables.iter().map(|t| t.functions.len()).sum::<usize>(),
             "total_warnings": tables.iter().map(|t| t.warnings.len()).sum::<usize>(),
+            "diff_only": diff_only,
         });
 
         Ok(CallToolResult::success(vec![Content::text(
@@ -225,12 +389,32 @@ impl RefineServer {
                 rmcp::ErrorData::invalid_params(format!("Invalid facts_json: {e}"), None)
             })?;
 
-        let prompts = build_red_team_prompts(mode, &plan_content, &fact_tables);
+        let prompts = if let Some(n) = params.0.red_count {
+            // Explicit count: use fixed N teams (RT-A..RT-D in order)
+            refine_mcp::prompts::build_red_team_prompts_n(
+                mode,
+                &plan_content,
+                &fact_tables,
+                n as usize,
+            )
+        } else {
+            // Auto-select: pick relevant teams based on fact signals
+            let teams = refine_mcp::prompts::auto_select_red_teams(&fact_tables);
+            refine_mcp::prompts::build_red_team_prompts_selected(
+                mode,
+                &plan_content,
+                &fact_tables,
+                &teams,
+            )
+        };
 
+        let team_ids: Vec<String> = prompts.iter().map(|p| format!("{:?}", p.id)).collect();
         let output = serde_json::json!({
             "prompts": prompts,
             "mode": format!("{mode:?}"),
             "red_count": prompts.len(),
+            "teams": team_ids,
+            "auto_selected": params.0.red_count.is_none(),
         });
 
         Ok(CallToolResult::success(vec![Content::text(
@@ -268,7 +452,13 @@ impl RefineServer {
 
         // Load persistent state and merge if plan_path provided
         let plan_path = params.0.plan_path.as_deref().map(Path::new);
-        let mut state = plan_path.map_or_else(RefineState::default, RefineState::load);
+        let mut state = match plan_path {
+            Some(pp) => RefineState::load(pp).unwrap_or_else(|e| {
+                parse_errors.push(format!("State load warning: {e}"));
+                RefineState::default()
+            }),
+            None => RefineState::default(),
+        };
         state.merge_findings(deduped.clone());
         state.last_run = Some(date_today());
 
@@ -332,12 +522,12 @@ impl RefineServer {
                 rmcp::ErrorData::invalid_params(format!("Invalid findings_json: {e}"), None)
             })?;
 
-        // Read original plan
+        // Read original plan for backup
         let original = std::fs::read_to_string(&plan_path).map_err(|e| {
             rmcp::ErrorData::invalid_params(format!("Failed to read plan: {e}"), None)
         })?;
 
-        // Create backup
+        // Create backup (snapshot before our append)
         let backup_path = plan_path.with_extension("draft.md");
         std::fs::write(&backup_path, &original).map_err(|e| {
             rmcp::ErrorData::internal_error(format!("Failed to create backup: {e}"), None)
@@ -346,18 +536,28 @@ impl RefineServer {
         // Generate refinement section
         let refinement = generate_refinement_section(&findings, &params.0.blue_result, mode);
 
-        // Append to plan
-        let mut updated = original;
-        updated.push_str("\n\n");
-        updated.push_str(&refinement);
+        // Append to plan (O_APPEND is atomic on POSIX — no TOCTOU)
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&plan_path)
+                .map_err(|e| {
+                    rmcp::ErrorData::internal_error(
+                        format!("Failed to open plan for append: {e}"),
+                        None,
+                    )
+                })?;
+            write!(file, "\n\n{refinement}").map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("Failed to append to plan: {e}"), None)
+            })?;
+        }
 
-        std::fs::write(&plan_path, &updated).map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Failed to write plan: {e}"), None)
-        })?;
-
-        // Save state — ensure findings persist across runs
-        let mut state = RefineState::load(&plan_path);
-        state.merge_findings(findings.clone());
+        // Update state metadata (NO merge — synthesize_findings already merged)
+        let mut state = RefineState::load(&plan_path).unwrap_or_else(|e| {
+            tracing::warn!("Failed to load state in finalize: {e}");
+            RefineState::default()
+        });
         state.last_run = Some(date_today());
         let state_warning = state.save(&plan_path).err().map(|e| e.to_string());
 
@@ -522,6 +722,8 @@ fn write_finding(out: &mut String, f: &refine_mcp::types::Finding, idx: usize) {
         .map(|s| match s {
             refine_mcp::types::RedTeamId::RtA => "RT-A",
             refine_mcp::types::RedTeamId::RtB => "RT-B",
+            refine_mcp::types::RedTeamId::RtC => "RT-C",
+            refine_mcp::types::RedTeamId::RtD => "RT-D",
         })
         .collect();
 
@@ -532,6 +734,25 @@ fn write_finding(out: &mut String, f: &refine_mcp::types::Finding, idx: usize) {
     if let Some(fix) = &f.suggested_fix {
         writeln!(out, "   - 建議修復：{fix}").ok();
     }
+}
+
+/// Get files changed relative to HEAD via `git diff`.
+///
+/// Returns an empty vec on any failure (no git, not a repo, etc.).
+fn git_changed_files() -> Vec<String> {
+    std::process::Command::new("git")
+        .args(["diff", "--name-only", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Get current date as YYYY-MM-DD string.

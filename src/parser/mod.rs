@@ -7,9 +7,9 @@ use crate::types::{Finding, RedTeamId, Severity};
 
 // ─── Pre-compiled Regexes ──────────────────────────────────────
 
-/// Matches `## [RT-A] ...` or `## [RT-B] ...`
+/// Matches `## [RT-A] ...` through `## [RT-D] ...`
 static RE_SOURCE_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^##\s+\[RT-([AB])\]").expect("valid regex"));
+    LazyLock::new(|| Regex::new(r"^##\s+\[RT-([A-D])\]").expect("valid regex"));
 
 /// Matches `### FATAL` or `### HIGH`
 static RE_SEVERITY_HEADER: LazyLock<Regex> =
@@ -31,15 +31,17 @@ static RE_FINDING_HEADER: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Matches `   - 問題：...` or `   - Problem: ...`
 static RE_PROBLEM: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s+-\s+問題[：:](.+)").expect("valid regex"));
+    LazyLock::new(|| Regex::new(r"^\s+-\s+(?:問題|Problem)[：:](.+)").expect("valid regex"));
 
 /// Matches `   - 攻擊場景：...` or `   - Attack scenario: ...`
-static RE_ATTACK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s+-\s+攻擊場景[：:](.+)").expect("valid regex"));
+static RE_ATTACK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s+-\s+(?:攻擊場景|Attack [Ss]cenario|Combined [Ss]cenario)[：:](.+)")
+        .expect("valid regex")
+});
 
 /// Matches `   - 建議修復：...` or `   - Suggested fix: ...`
 static RE_FIX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s+-\s+建議修復[：:](.+)").expect("valid regex"));
+    LazyLock::new(|| Regex::new(r"^\s+-\s+(?:建議修復|Suggested [Ff]ix)[：:](.+)").expect("valid regex"));
 
 // ─── Public API ────────────────────────────────────────────────
 
@@ -66,6 +68,8 @@ pub fn parse_red_team_output(md: &str) -> anyhow::Result<Vec<Finding>> {
             current_source = Some(match &caps[1] {
                 "A" => RedTeamId::RtA,
                 "B" => RedTeamId::RtB,
+                "C" => RedTeamId::RtC,
+                "D" => RedTeamId::RtD,
                 _ => continue,
             });
             current_severity = None;
@@ -149,6 +153,14 @@ fn flush_pending(
     let Some(pf) = pending.take() else {
         return;
     };
+
+    // Skip findings with empty problem AND empty attack_scenario — they're
+    // likely parser artifacts from LLM format deviations, not real findings.
+    let has_problem = pf.problem.as_deref().is_some_and(|s| !s.is_empty());
+    let has_attack = pf.attack_scenario.as_deref().is_some_and(|s| !s.is_empty());
+    if !has_problem && !has_attack {
+        return;
+    }
 
     *counter += 1;
 

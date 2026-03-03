@@ -105,6 +105,7 @@ pub fn extract_php_facts(path: &Path, source: &str) -> anyhow::Result<FactTable>
 
     collect_methods(root, source_bytes, &mut functions);
     generate_warnings(&functions, &mut warnings);
+    generate_n_plus_one_warnings(source, &functions, &mut warnings);
 
     Ok(FactTable {
         file: path.to_path_buf(),
@@ -144,7 +145,7 @@ fn extract_method_fact(method: tree_sitter::Node, source: &[u8]) -> Option<Funct
     let parameters = extract_parameters(method, source);
     let transaction = extract_transaction(method_text, start_line);
     let locks = extract_locks(method_text, start_line);
-    let catch_blocks = extract_catch_blocks(method, source);
+    let catch_blocks = extract_catch_blocks(method, source, method_text, start_line);
     let external_calls = extract_external_calls(method_text, start_line, transaction.as_ref());
     let state_mutations = extract_mutations(method_text, start_line);
     let null_risks = extract_null_risks(method_text, start_line);
@@ -254,13 +255,24 @@ fn extract_locks(method_text: &str, base_line: u32) -> Vec<LockFact> {
     locks
 }
 
-fn extract_catch_blocks(method: tree_sitter::Node, source: &[u8]) -> Vec<CatchFact> {
+fn extract_catch_blocks(
+    method: tree_sitter::Node,
+    source: &[u8],
+    method_text: &str,
+    base_line: u32,
+) -> Vec<CatchFact> {
     let mut catches = Vec::new();
-    walk_for_catch(method, source, &mut catches);
+    walk_for_catch(method, source, method_text, base_line, &mut catches);
     catches
 }
 
-fn walk_for_catch(node: tree_sitter::Node, source: &[u8], catches: &mut Vec<CatchFact>) {
+fn walk_for_catch(
+    node: tree_sitter::Node,
+    source: &[u8],
+    method_text: &str,
+    base_line: u32,
+    catches: &mut Vec<CatchFact>,
+) {
     if node.kind() == "catch_clause" {
         #[allow(clippy::cast_possible_truncation)]
         let line = node.start_position().row as u32 + 1;
@@ -282,17 +294,39 @@ fn walk_for_catch(node: tree_sitter::Node, source: &[u8], catches: &mut Vec<Catc
             CatchAction::SilentSwallow
         };
 
+        let side_effects = extract_side_effects_before(method_text, line, base_line);
+
         catches.push(CatchFact {
             line,
             catches: catches_type,
             action,
-            side_effects_before: Vec::new(),
+            side_effects_before: side_effects,
         });
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_for_catch(child, source, catches);
+        walk_for_catch(child, source, method_text, base_line, catches);
     }
+}
+
+/// Scan lines before a catch block for DB side effects (create/save/update/insert/delete).
+fn extract_side_effects_before(method_text: &str, catch_line: u32, base_line: u32) -> Vec<String> {
+    static RE_SIDE_EFFECT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(::|->)(create|save|update|delete|insert|bulk_create)\(|DB::(insert|update|delete)\(")
+            .expect("valid regex")
+    });
+
+    let catch_offset = catch_line.saturating_sub(base_line) as usize;
+    let mut effects = Vec::new();
+    for (i, line) in method_text.lines().enumerate() {
+        if i >= catch_offset {
+            break;
+        }
+        if RE_SIDE_EFFECT.is_match(line) {
+            effects.push(line.trim().to_string());
+        }
+    }
+    effects
 }
 
 fn extract_external_calls(
@@ -398,6 +432,52 @@ fn generate_warnings(functions: &[FunctionFact], warnings: &mut Vec<String>) {
                 "{}: read-modify-write without lock (TOCTOU risk)",
                 f.name
             ));
+        }
+    }
+}
+
+/// Detect N+1 query patterns: Eloquent queries inside foreach/for loops.
+fn generate_n_plus_one_warnings(
+    source: &str,
+    functions: &[FunctionFact],
+    warnings: &mut Vec<String>,
+) {
+    static RE_LOOP_START: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\b(foreach|for)\s*\(").expect("valid regex")
+    });
+    static RE_QUERY_IN_LOOP: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"::(find|where|get|first|all|with|has)\(|->load\(|DB::(select|table)\(")
+            .expect("valid regex")
+    });
+
+    let all_lines: Vec<&str> = source.lines().collect();
+
+    for f in functions {
+        let fn_start = f.line_range.0.saturating_sub(1) as usize;
+        let fn_end = std::cmp::min(f.line_range.1 as usize, all_lines.len());
+
+        let mut in_loop_depth: u32 = 0;
+        for line_idx in fn_start..fn_end {
+            let line = all_lines[line_idx];
+            if RE_LOOP_START.is_match(line) {
+                in_loop_depth += 1;
+            }
+            if in_loop_depth > 0 && RE_QUERY_IN_LOOP.is_match(line) {
+                #[allow(clippy::cast_possible_truncation)]
+                warnings.push(format!(
+                    "{}: potential N+1 query at L{} (Eloquent call inside loop)",
+                    f.name,
+                    line_idx as u32 + 1,
+                ));
+            }
+            // Track closing braces (approximate)
+            if in_loop_depth > 0 {
+                let opens = line.matches('{').count();
+                let closes = line.matches('}').count();
+                if closes > opens {
+                    in_loop_depth = in_loop_depth.saturating_sub((closes - opens) as u32);
+                }
+            }
         }
     }
 }

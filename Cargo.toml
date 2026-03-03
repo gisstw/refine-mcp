@@ -3,6 +3,11 @@ name = "refine-mcp"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+description = "Grounded red-blue adversarial plan refinement via MCP — tree-sitter fact extraction + LLM red/blue team analysis"
+license = "MIT OR Apache-2.0"
+keywords = ["mcp", "code-review", "security", "tree-sitter", "red-team"]
+categories = ["development-tools", "command-line-utilities"]
+readme = "README.md"
 
 [lints.rust]
 unsafe_code = "warn"
@@ -29,6 +34,8 @@ rmcp = { version = "0.16", features = ["server", "transport-io"] }
 tree-sitter = "0.25"
 tree-sitter-php = "0.24"
 tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.23"
 
 # Serialization & Schema
 serde = { version = "1", features = ["derive"] }

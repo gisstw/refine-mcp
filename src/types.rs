@@ -10,6 +10,10 @@ pub enum RedTeamId {
     RtA,
     /// Multi-op: concurrency + TOCTOU + behavioral changes
     RtB,
+    /// Data integrity: schema drift + data loss + constraint violations
+    RtC,
+    /// Auth boundary: privilege escalation + access control + session hijack
+    RtD,
 }
 
 // ─── Finding ─────────────────────────────────────────────────
@@ -111,9 +115,16 @@ impl RefineMode {
         }
     }
 
+    /// Default number of red teams for this mode.
+    ///
+    /// Can be overridden via `PrepareAttackParams::red_count`.
     #[must_use]
     pub fn red_count(&self) -> usize {
-        2
+        match self {
+            Self::Default => 2,
+            Self::Lite => 2,
+            Self::Auto => 2,
+        }
     }
 }
 

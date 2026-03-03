@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
+
 use crate::types::{Finding, FindingStatus};
 
-/// Default state file path relative to project root.
-const DEFAULT_STATE_FILE: &str = ".claude/refine-state.json";
 
 /// Persistent state across refine runs.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -16,19 +16,24 @@ pub struct RefineState {
 impl RefineState {
     /// Load state from the default location relative to a plan path.
     ///
-    /// Returns default (empty) state if file doesn't exist.
-    #[must_use]
-    pub fn load(plan_path: &Path) -> Self {
+    /// Returns default (empty) state if file doesn't exist yet.
+    /// Returns error if file exists but is corrupted or unreadable.
+    pub fn load(plan_path: &Path) -> anyhow::Result<Self> {
         let state_path = state_path_from_plan(plan_path);
         Self::load_from(&state_path)
     }
 
     /// Load state from a specific path.
-    #[must_use]
-    pub fn load_from(path: &Path) -> Self {
+    ///
+    /// - File not found → Ok(default) (first run)
+    /// - File corrupted → Err (caller decides recovery)
+    /// - Permission denied → Err
+    pub fn load_from(path: &Path) -> anyhow::Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => Self::default(),
+            Ok(content) => serde_json::from_str(&content)
+                .context("State file corrupted — JSON parse failed"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e).context("Failed to read state file"),
         }
     }
 
@@ -38,13 +43,19 @@ impl RefineState {
         self.save_to(&state_path)
     }
 
-    /// Save state to a specific path.
+    /// Save state atomically: write to temp file then rename.
+    ///
+    /// Prevents corruption from mid-write crashes or concurrent reads.
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, &json)
+            .context("Failed to write temp state file")?;
+        std::fs::rename(&tmp, path)
+            .context("Failed to atomic-rename state file")?;
         Ok(())
     }
 
@@ -111,8 +122,11 @@ fn state_path_from_plan(plan_path: &Path) -> PathBuf {
         return dir.join("refine-state.json");
     }
 
-    // Otherwise use default path from current directory
-    PathBuf::from(DEFAULT_STATE_FILE)
+    // Anchor to plan file's parent directory (not CWD which may vary)
+    plan_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("refine-state.json")
 }
 
 #[cfg(test)]
@@ -209,8 +223,46 @@ mod tests {
     }
 
     #[test]
+    fn load_from_nonexistent_returns_default() {
+        let state = RefineState::load_from(Path::new("/tmp/refine_nonexistent_12345.json")).unwrap();
+        assert_eq!(state.findings.len(), 0);
+        assert_eq!(state.run_count, 0);
+    }
+
+    #[test]
+    fn load_from_corrupted_returns_error() {
+        let tmp = std::env::temp_dir().join("refine_test_corrupt.json");
+        std::fs::write(&tmp, "NOT VALID JSON {{{").unwrap();
+        let result = RefineState::load_from(&tmp);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("corrupted"));
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn save_to_atomic_roundtrip() {
+        let tmp = std::env::temp_dir().join("refine_test_atomic.json");
+        let mut state = RefineState::default();
+        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")]);
+        state.save_to(&tmp).unwrap();
+
+        let loaded = RefineState::load_from(&tmp).unwrap();
+        assert_eq!(loaded.findings.len(), 1);
+        // Verify no .tmp file remains
+        assert!(!tmp.with_extension("json.tmp").exists());
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
     fn state_path_from_plan_in_claude_plans() {
         let path = state_path_from_plan(Path::new(".claude/plans/my-plan.md"));
         assert_eq!(path, PathBuf::from(".claude/refine-state.json"));
+    }
+
+    #[test]
+    fn state_path_from_plan_in_arbitrary_dir() {
+        // When plan is not inside .claude/, state goes next to the plan
+        let path = state_path_from_plan(Path::new("/tmp/my-project/plan.md"));
+        assert_eq!(path, PathBuf::from("/tmp/my-project/refine-state.json"));
     }
 }

@@ -293,20 +293,16 @@ fn extract_external_calls(
 
 fn extract_mutations(fn_text: &str, base_line: u32) -> Vec<MutationFact> {
     let mut mutations = Vec::new();
+    let all_lines: Vec<&str> = fn_text.lines().collect();
 
-    for (i, line) in fn_text.lines().enumerate() {
+    for (i, line) in all_lines.iter().enumerate() {
         #[allow(clippy::cast_possible_truncation)]
         let line_num = base_line + i as u32;
 
         // Detect SQL operations in sqlx query strings
         if line.contains("sqlx::query") || line.contains("query!") || line.contains("query_as!") {
-            // Check the SQL string content (may span to next lines)
-            let block: String = fn_text
-                .lines()
-                .skip(i)
-                .take(5)
-                .collect::<Vec<_>>()
-                .join(" ");
+            // Dynamically collect lines until we see .bind(, .fetch, .execute, or closing )
+            let block = collect_sql_block(&all_lines, i);
 
             if RE_SQL_INSERT.is_match(&block) {
                 mutations.push(MutationFact {
@@ -332,6 +328,27 @@ fn extract_mutations(fn_text: &str, base_line: u32) -> Vec<MutationFact> {
         }
     }
     mutations
+}
+
+/// Collect SQL query text from the start line until a terminator (.bind, .fetch, .execute)
+/// or a maximum of 20 lines. This handles multi-line SQL strings that span many lines.
+fn collect_sql_block(lines: &[&str], start: usize) -> String {
+    let max_end = (start + 20).min(lines.len());
+    let mut parts = Vec::new();
+    for j in start..max_end {
+        parts.push(lines[j]);
+        let trimmed = lines[j].trim();
+        // Stop at common sqlx chain terminators
+        if j > start
+            && (trimmed.starts_with(".bind(")
+                || trimmed.starts_with(".fetch")
+                || trimmed.starts_with(".execute")
+                || trimmed == ")")
+        {
+            break;
+        }
+    }
+    parts.join(" ")
 }
 
 fn extract_null_risks(fn_text: &str, base_line: u32) -> Vec<NullRiskFact> {
@@ -395,11 +412,26 @@ pub(crate) fn generate_toctou_warnings(
         let fn_end = std::cmp::min(f.line_range.1 as usize, lines.len());
         let fn_body: String = lines[fn_start..fn_end].join("\n");
 
+        // SQL read-modify-write pattern
         if RE_SQL_SELECT.is_match(&fn_body)
             && (RE_SQL_UPDATE.is_match(&fn_body) || RE_SQL_DELETE.is_match(&fn_body))
         {
             warnings.push(format!(
                 "{}: read-modify-write without lock or transaction (TOCTOU risk)",
+                f.name
+            ));
+        }
+
+        // File system read-then-write pattern (read_to_string + write/fs::write)
+        let has_fs_read = fn_body.contains("read_to_string")
+            || fn_body.contains("fs::read")
+            || fn_body.contains("File::open");
+        let has_fs_write = fn_body.contains("fs::write")
+            || fn_body.contains("write_all")
+            || fn_body.contains("File::create");
+        if has_fs_read && has_fs_write {
+            warnings.push(format!(
+                "{}: file read-then-write without atomic rename (TOCTOU risk)",
                 f.name
             ));
         }

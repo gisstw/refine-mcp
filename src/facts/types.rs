@@ -18,6 +18,8 @@ pub struct FactTable {
 pub enum Language {
     Php,
     Rust,
+    TypeScript,
+    Python,
 }
 
 /// Facts about a single function/method.
@@ -158,9 +160,9 @@ mod tests {
                 }],
                 external_calls: vec![ExternalCallFact {
                     line: 70,
-                    target: "CathayPaymentProcessingService::authorize".to_string(),
+                    target: "PaymentGateway::authorize".to_string(),
                     in_transaction: true,
-                    description: Some("Cathay SOAP API call inside DB transaction".to_string()),
+                    description: Some("Payment API call inside DB transaction".to_string()),
                 }],
                 state_mutations: vec![MutationFact {
                     line: 75,

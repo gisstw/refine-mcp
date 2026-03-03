@@ -105,7 +105,7 @@ fn dedup_merges_similar_titles_same_file_no_line_range() {
         "F1",
         "app/Svc.php",
         None,
-        "cancelAndRefund race condition",
+        "cancelAndRefund race condition in BillingService",
         Severity::Fatal,
         RedTeamId::RtA,
     );
@@ -113,12 +113,12 @@ fn dedup_merges_similar_titles_same_file_no_line_range() {
         "F2",
         "app/Svc.php",
         None,
-        "cancelAndRefund race condition vulnerability",
+        "cancelAndRefund race conditions in BillingService",
         Severity::High,
         RedTeamId::RtB,
     );
     let result = dedup_findings(vec![f1, f2]);
-    assert_eq!(result.len(), 1);
+    assert_eq!(result.len(), 1, "titles with >0.85 similarity should merge");
     assert_eq!(result[0].sources.len(), 2);
 }
 
