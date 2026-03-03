@@ -112,24 +112,25 @@ impl RefineState {
 ///
 /// Given `.claude/plans/my-plan.md`, state goes to `.claude/refine-state.json`.
 fn state_path_from_plan(plan_path: &Path) -> PathBuf {
-    // Walk up to find .claude/ directory
-    let mut dir = plan_path.parent().unwrap_or(Path::new("."));
+    let dir = plan_path.parent().unwrap_or(Path::new("."));
 
-    // If we're in .claude/plans/, go up to .claude/
+    // Check specifically for `.claude/plans/` — both components must match
+    // to avoid misidentifying arbitrary directories named `plans`.
     if dir.ends_with("plans") {
-        dir = dir.parent().unwrap_or(Path::new("."));
+        if let Some(parent) = dir.parent() {
+            if parent.ends_with(".claude") {
+                return parent.join("refine-state.json");
+            }
+        }
     }
 
-    // If we're in .claude/, use it directly
+    // If we're directly in .claude/, use it
     if dir.ends_with(".claude") {
         return dir.join("refine-state.json");
     }
 
     // Anchor to plan file's parent directory (not CWD which may vary)
-    plan_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("refine-state.json")
+    dir.join("refine-state.json")
 }
 
 #[cfg(test)]

@@ -250,7 +250,10 @@ fn extract_transaction(fn_text: &str, start_line: u32) -> Option<TransactionFact
         let start = lines.iter().position(|l| RE_TX.is_match(l)).unwrap_or(0);
         #[allow(clippy::cast_possible_truncation)]
         Some(TransactionFact {
-            line_range: (start_line + start as u32, start_line + lines.len() as u32),
+            line_range: (
+                start_line + start as u32,
+                start_line + lines.len().saturating_sub(1) as u32,
+            ),
             has_lock_for_update: fn_text.contains("FOR UPDATE"),
         })
     } else {

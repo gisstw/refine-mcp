@@ -17,10 +17,6 @@ const TITLE_SIMILARITY_THRESHOLD: f64 = 0.85;
 /// - After dedup: assign impact scores
 #[must_use]
 pub fn dedup_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
-    // Only check recent entries in merged (same file, nearby lines)
-    // Look back at most LOOK_BACK items to catch nearby duplicates
-    const LOOK_BACK: usize = 10;
-
     if findings.len() <= 1 {
         for f in &mut findings {
             f.impact_score = impact_score(f);
@@ -28,8 +24,7 @@ pub fn dedup_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
         return findings;
     }
 
-    // Sort by (file_path, line_start) for locality — enables O(n·k) merge
-    // where k is the look-back window (constant) instead of O(n²)
+    // Sort by (file_path, line_start) for locality
     findings.sort_by(|a, b| {
         a.file_path.cmp(&b.file_path).then_with(|| {
             let a_start = a.line_range.map_or(0, |r| r.0);
@@ -38,13 +33,15 @@ pub fn dedup_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
         })
     });
 
+    // Full scan: typical finding count is <100 so O(n²) is trivially fast.
+    // Previous lookback-window approach could miss duplicates reported by
+    // different red teams at the same location but far apart in sorted order.
     let mut merged: Vec<Finding> = Vec::with_capacity(findings.len());
 
     for finding in findings {
         let mut was_merged = false;
 
-        let start = merged.len().saturating_sub(LOOK_BACK);
-        for existing in &mut merged[start..] {
+        for existing in &mut merged {
             if should_merge(existing, &finding) {
                 merge_into(existing, &finding);
                 was_merged = true;
@@ -118,8 +115,8 @@ fn merge_into(existing: &mut Finding, other: &Finding) {
         }
     }
 
-    // Keep higher severity
-    if other.severity < existing.severity {
+    // Keep higher severity (Fatal > High with our manual Ord)
+    if other.severity > existing.severity {
         existing.severity = other.severity;
     }
 

@@ -151,6 +151,7 @@ fn template_for(id: RedTeamId) -> &'static str {
         RedTeamId::RtB => TEMPLATE_RT_B,
         RedTeamId::RtC => TEMPLATE_RT_C,
         RedTeamId::RtD => TEMPLATE_RT_D,
+        RedTeamId::BlueTeam => TEMPLATE_BLUE,
     }
 }
 
@@ -171,7 +172,7 @@ pub fn build_blue_team_prompt(
         .replace("{plan_summary}", plan_summary);
 
     RedTeamPrompt {
-        id: RedTeamId::RtA, // Blue team doesn't have its own ID; reuse for struct compatibility
+        id: RedTeamId::BlueTeam,
         prompt,
         recommended_model: mode.blue_model().to_string(),
     }
@@ -259,6 +260,7 @@ mod tests {
         assert!(prompt.prompt.contains("RT-001"));
         assert!(prompt.prompt.contains("Test finding"));
         assert!(prompt.prompt.contains("Plan summary"));
+        assert_eq!(prompt.id, RedTeamId::BlueTeam);
         assert_eq!(prompt.recommended_model, "opus");
     }
 

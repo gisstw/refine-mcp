@@ -221,7 +221,10 @@ fn extract_transaction(method_text: &str, base_line: u32) -> Option<TransactionF
     let has_lock = method_text.contains("lockForUpdate");
     #[allow(clippy::cast_possible_truncation)]
     Some(TransactionFact {
-        line_range: (base_line + start as u32, base_line + lines.len() as u32),
+        line_range: (
+            base_line + start as u32,
+            base_line + lines.len().saturating_sub(1) as u32,
+        ),
         has_lock_for_update: has_lock,
     })
 }

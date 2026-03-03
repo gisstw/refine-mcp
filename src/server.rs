@@ -111,14 +111,7 @@ impl RefineServer {
             .0
             .plan_dir
             .unwrap_or_else(|| ".claude/plans".to_string());
-        let dir_path = PathBuf::from(&dir);
-
-        if !dir_path.is_dir() {
-            return Err(rmcp::ErrorData::invalid_params(
-                format!("Directory not found: {dir}"),
-                None,
-            ));
-        }
+        let dir_path = validate_dir(&dir)?;
 
         // Find the most recently modified .md file
         let mut latest: Option<(PathBuf, std::time::SystemTime)> = None;
@@ -178,14 +171,7 @@ impl RefineServer {
             .plan_dir
             .unwrap_or_else(|| ".claude/plans".to_string());
         let diff_only = params.0.diff_only.unwrap_or(false);
-        let dir_path = PathBuf::from(&dir);
-
-        if !dir_path.is_dir() {
-            return Err(rmcp::ErrorData::invalid_params(
-                format!("Directory not found: {dir}"),
-                None,
-            ));
-        }
+        let dir_path = validate_dir(&dir)?;
 
         // ── Step 1: discover plan (same logic as discover_plan) ──
         let mut latest: Option<(PathBuf, std::time::SystemTime)> = None;
@@ -222,7 +208,12 @@ impl RefineServer {
         if diff_only {
             let changed = git_changed_files();
             if !changed.is_empty() {
-                file_refs.retain(|f| changed.iter().any(|c| f.ends_with(c) || c.ends_with(f)));
+                file_refs.retain(|f| {
+                    let fp = Path::new(f);
+                    changed
+                        .iter()
+                        .any(|c| fp.ends_with(c) || Path::new(c).ends_with(f))
+                });
             }
         }
 
@@ -304,13 +295,22 @@ impl RefineServer {
         params: Parameters<ExtractFactsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let diff_only = params.0.diff_only.unwrap_or(false);
-        let mut file_paths = params.0.file_paths;
+        let mut file_paths = Vec::with_capacity(params.0.file_paths.len());
+        for fp in &params.0.file_paths {
+            validate_path(fp)?;
+            file_paths.push(fp.clone());
+        }
 
         // Filter to git-changed files if requested
         if diff_only {
             let changed = git_changed_files();
             if !changed.is_empty() {
-                file_paths.retain(|f| changed.iter().any(|c| f.ends_with(c) || c.ends_with(f)));
+                file_paths.retain(|f| {
+                    let fp = Path::new(f);
+                    changed
+                        .iter()
+                        .any(|c| fp.ends_with(c) || Path::new(c).ends_with(f))
+                });
             }
         }
 
@@ -393,9 +393,10 @@ impl RefineServer {
         params: Parameters<PrepareAttackParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let mode = parse_mode(params.0.mode.as_deref())?;
+        let plan_path = validate_path(&params.0.plan_path)?;
 
         // Read plan content
-        let plan_content = std::fs::read_to_string(&params.0.plan_path).map_err(|e| {
+        let plan_content = std::fs::read_to_string(&plan_path).map_err(|e| {
             rmcp::ErrorData::invalid_params(format!("Failed to read plan: {e}"), None)
         })?;
 
@@ -533,7 +534,7 @@ impl RefineServer {
         &self,
         params: Parameters<FinalizeRefinementParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let plan_path = PathBuf::from(&params.0.plan_path);
+        let plan_path = validate_path(&params.0.plan_path)?;
         let mode = parse_mode(params.0.mode.as_deref())?;
 
         // Parse findings
@@ -556,22 +557,18 @@ impl RefineServer {
         // Generate refinement section
         let refinement = generate_refinement_section(&findings, &params.0.blue_result, mode);
 
-        // Append to plan (O_APPEND is atomic on POSIX — no TOCTOU)
-        {
-            use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&plan_path)
-                .map_err(|e| {
-                    rmcp::ErrorData::internal_error(
-                        format!("Failed to open plan for append: {e}"),
-                        None,
-                    )
-                })?;
-            write!(file, "\n\n{refinement}").map_err(|e| {
-                rmcp::ErrorData::internal_error(format!("Failed to append to plan: {e}"), None)
-            })?;
-        }
+        // Atomic write: write full content (original + refinement) to .tmp, then rename
+        let new_content = format!("{original}\n\n{refinement}");
+        let tmp_path = plan_path.with_extension("md.tmp");
+        std::fs::write(&tmp_path, &new_content).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("Failed to write temp file: {e}"), None)
+        })?;
+        std::fs::rename(&tmp_path, &plan_path).map_err(|e| {
+            rmcp::ErrorData::internal_error(
+                format!("Failed to atomic-rename plan file: {e}"),
+                None,
+            )
+        })?;
 
         // Update state metadata (NO merge — synthesize_findings already merged)
         let mut state = RefineState::load(&plan_path).unwrap_or_else(|e| {
@@ -619,6 +616,53 @@ impl ServerHandler for RefineServer {
             ..Default::default()
         }
     }
+}
+
+// ─── Path Validation ──────────────────────────────────────────
+
+/// Validate a path is safe to access.
+///
+/// Rejects paths with `..` components (traversal) and absolute paths
+/// outside the current working directory.
+fn validate_path(p: &str) -> Result<PathBuf, rmcp::ErrorData> {
+    let path = PathBuf::from(p);
+
+    // Reject path traversal
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(rmcp::ErrorData::invalid_params(
+            format!("Path traversal rejected: {p}"),
+            None,
+        ));
+    }
+
+    // For absolute paths, verify they're under CWD
+    if path.is_absolute() {
+        if let Ok(cwd) = std::env::current_dir() {
+            if !path.starts_with(&cwd) {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!("Absolute path outside working directory: {p}"),
+                    None,
+                ));
+            }
+        }
+    }
+
+    Ok(path)
+}
+
+/// Validate a directory path (same rules as [`validate_path`], must also be a directory).
+fn validate_dir(p: &str) -> Result<PathBuf, rmcp::ErrorData> {
+    let path = validate_path(p)?;
+    if !path.is_dir() {
+        return Err(rmcp::ErrorData::invalid_params(
+            format!("Directory not found: {p}"),
+            None,
+        ));
+    }
+    Ok(path)
 }
 
 // ─── Helper Functions ──────────────────────────────────────────
@@ -740,6 +784,7 @@ fn write_finding(out: &mut String, f: &refine_mcp::types::Finding, idx: usize) {
             refine_mcp::types::RedTeamId::RtB => "RT-B",
             refine_mcp::types::RedTeamId::RtC => "RT-C",
             refine_mcp::types::RedTeamId::RtD => "RT-D",
+            refine_mcp::types::RedTeamId::BlueTeam => "Blue",
         })
         .collect();
 

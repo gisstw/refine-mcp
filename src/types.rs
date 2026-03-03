@@ -14,15 +14,40 @@ pub enum RedTeamId {
     RtC,
     /// Auth boundary: privilege escalation + access control + session hijack
     RtD,
+    /// Blue team: cross-analysis and synthesis (not a red team role)
+    BlueTeam,
 }
 
 // ─── Finding ─────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Fatal,
     High,
+}
+
+impl Severity {
+    /// Numeric rank: higher = more severe (Fatal=2, High=1).
+    #[must_use]
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Fatal => 2,
+            Self::High => 1,
+        }
+    }
+}
+
+impl PartialOrd for Severity {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Severity {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.rank().cmp(&other.rank())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -58,10 +83,8 @@ impl Finding {
     /// Create a new finding with safe defaults (`status` = New, `impact_score` = 0).
     #[must_use]
     pub fn new(severity: Severity, title: String, source: RedTeamId, file_path: PathBuf) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self {
-            id: format!("RT-{n:03}"),
+            id: "RT-000".to_string(), // Placeholder — parser/dedup assigns final IDs
             severity,
             title,
             sources: vec![source],
