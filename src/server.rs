@@ -64,7 +64,8 @@ pub struct FinalizeRefinementParams {
     pub plan_path: String,
     /// Blue team cross-analysis result (markdown)
     pub blue_result: String,
-    /// JSON-encoded findings from `synthesize_findings`
+    /// JSON array of Finding objects (from `synthesize_findings` output, or manually constructed).
+    /// See tool description for required fields and example.
     pub findings_json: String,
     /// Refine mode used
     pub mode: Option<String>,
@@ -528,7 +529,25 @@ impl RefineServer {
 
     /// Write refinement section to plan file.
     #[tool(
-        description = "Backup plan and append refinement section with findings and blue team analysis"
+        description = "Backup plan and append refinement section with findings and blue team analysis.\n\n\
+        The `findings_json` parameter must be a JSON array of Finding objects. \
+        Each Finding requires these fields:\n\
+        - id: string (e.g. \"RT-A\")\n\
+        - severity: \"fatal\" or \"high\" (lowercase only)\n\
+        - title: string\n\
+        - problem: string describing the issue\n\
+        - attack_scenario: string describing how it can fail (or \"N/A\" if none)\n\
+        - sources: array of RedTeamId values: \"RtA\", \"RtB\", \"RtC\", \"RtD\", or \"BlueTeam\"\n\
+        - file_path: string (relative path to the affected file)\n\
+        - affected_plan_steps: array of strings (e.g. [\"Step 1\", \"Step 2\"])\n\n\
+        Optional fields: line_range ([start, end] as [u32, u32]), suggested_fix (string), \
+        status (\"new\"|\"confirmed\"|\"fixed\"|\"false_positive\", default: \"new\")\n\n\
+        Example: [{\"id\":\"RT-A\",\"severity\":\"high\",\"title\":\"Missing null check\",\
+        \"problem\":\"Config value used without fallback\",\
+        \"attack_scenario\":\"App crashes when config key is unset\",\
+        \"sources\":[\"RtA\"],\"file_path\":\"src/config.rs\",\
+        \"affected_plan_steps\":[\"Step 2\"],\"suggested_fix\":\"Add default value\"}]\n\n\
+        Tip: If you used `synthesize_findings` first, pass its `findings` array directly as a JSON string."
     )]
     async fn finalize_refinement(
         &self,
