@@ -61,3 +61,6 @@ regex = "1"
 
 # Date formatting (replaces hand-rolled date math)
 time = { version = "0.3", features = ["formatting"] }
+
+[dev-dependencies]
+tempfile = "3"
