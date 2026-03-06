@@ -112,6 +112,7 @@ pub fn extract_php_facts(path: &Path, source: &str) -> anyhow::Result<FactTable>
         language: Language::Php,
         functions,
         warnings,
+        callers: vec![],
     })
 }
 

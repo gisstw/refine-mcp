@@ -76,6 +76,7 @@ pub fn extract_ts_facts(path: &Path, source: &str) -> anyhow::Result<FactTable> 
         language: Language::TypeScript,
         functions,
         warnings,
+        callers: vec![],
     })
 }
 

@@ -75,6 +75,7 @@ pub fn extract_rust_facts(path: &Path, source: &str) -> anyhow::Result<FactTable
         language: Language::Rust,
         functions,
         warnings,
+        callers: vec![],
     })
 }
 

@@ -203,6 +203,7 @@ mod tests {
                 null_risks: Vec::new(),
             }],
             warnings: vec!["process: 2 SQL mutations without transaction".to_string()],
+            callers: vec![],
         }
     }
 
@@ -308,6 +309,7 @@ mod tests {
                 null_risks: Vec::new(),
             }],
             warnings: vec![],
+            callers: vec![],
         }];
         let teams = auto_select_red_teams(&facts);
         assert!(
@@ -327,6 +329,7 @@ mod tests {
             language: Language::Php,
             functions: vec![],
             warnings: vec![],
+            callers: vec![],
         }];
         let teams = auto_select_red_teams(&facts);
         assert!(
@@ -362,6 +365,7 @@ mod tests {
                 null_risks: Vec::new(),
             }],
             warnings: vec![],
+            callers: vec![],
         }];
         let teams = auto_select_red_teams(&facts);
         assert!(
@@ -405,6 +409,7 @@ mod tests {
                 null_risks: Vec::new(),
             }],
             warnings: vec![],
+            callers: vec![],
         }];
         let teams = auto_select_red_teams(&facts);
         assert_eq!(teams.len(), 4, "should select all 4 teams: {teams:?}");

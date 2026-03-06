@@ -72,6 +72,7 @@ pub fn extract_python_facts(path: &Path, source: &str) -> anyhow::Result<FactTab
         language: Language::Python,
         functions,
         warnings,
+        callers: vec![],
     })
 }
 

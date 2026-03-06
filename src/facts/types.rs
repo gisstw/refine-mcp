@@ -11,6 +11,9 @@ pub struct FactTable {
     pub functions: Vec<FunctionFact>,
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// Callers of functions in this file, populated by expand_blast_radius
+    #[serde(default)]
+    pub callers: Vec<CallerFact>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,6 +129,56 @@ pub struct NullRiskFact {
     pub reason: String,
 }
 
+// ─── Blast Radius Facts ─────────────────────────────────────
+
+/// A caller of a function found via grep search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallerFact {
+    pub symbol: String,
+    pub caller_file: PathBuf,
+    pub caller_line: u32,
+    pub context: String,
+}
+
+// ─── Schema Facts ───────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SchemaSnapshot {
+    pub tables: Vec<SchemaTable>,
+    #[serde(default)]
+    pub type_warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaTable {
+    pub table_name: String,
+    pub columns: Vec<ColumnFact>,
+    #[serde(default)]
+    pub foreign_keys: Vec<ForeignKeyFact>,
+    #[serde(default)]
+    pub indexes: Vec<String>,
+    pub source_file: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnFact {
+    pub name: String,
+    pub col_type: String,
+    #[serde(default)]
+    pub nullable: bool,
+    #[serde(default)]
+    pub has_default: bool,
+    pub default_value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForeignKeyFact {
+    pub column: String,
+    pub references_table: String,
+    pub references_column: String,
+    pub on_delete: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +229,7 @@ mod tests {
                 }],
             }],
             warnings: vec![],
+            callers: vec![],
         }
     }
 
@@ -223,5 +277,68 @@ mod tests {
             let restored: CatchAction = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(&restored, action);
         }
+    }
+
+    #[test]
+    fn caller_fact_roundtrip() {
+        let caller = CallerFact {
+            symbol: "createMainBill".to_string(),
+            caller_file: PathBuf::from("app/Services/WalkinBetaService.php"),
+            caller_line: 142,
+            context: "$this->billingService->createMainBill($orderSerial)".to_string(),
+        };
+        let json = serde_json::to_string(&caller).expect("serialize");
+        let restored: CallerFact = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.symbol, "createMainBill");
+        assert_eq!(restored.caller_line, 142);
+    }
+
+    #[test]
+    fn schema_snapshot_roundtrip() {
+        let schema = SchemaSnapshot {
+            tables: vec![SchemaTable {
+                table_name: "reservations".to_string(),
+                columns: vec![ColumnFact {
+                    name: "status".to_string(),
+                    col_type: "tinyInteger".to_string(),
+                    nullable: false,
+                    has_default: true,
+                    default_value: Some("1".to_string()),
+                }],
+                foreign_keys: vec![ForeignKeyFact {
+                    column: "Rt_id".to_string(),
+                    references_table: "room_type".to_string(),
+                    references_column: "id".to_string(),
+                    on_delete: Some("CASCADE".to_string()),
+                }],
+                indexes: vec!["idx_status".to_string()],
+                source_file: PathBuf::from("database/migrations/create_reservations.php"),
+            }],
+            type_warnings: vec!["price is VARCHAR".to_string()],
+        };
+        let json = serde_json::to_string_pretty(&schema).expect("serialize");
+        let restored: SchemaSnapshot = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.tables.len(), 1);
+        assert_eq!(restored.tables[0].columns[0].col_type, "tinyInteger");
+        assert_eq!(restored.tables[0].foreign_keys[0].on_delete.as_deref(), Some("CASCADE"));
+    }
+
+    #[test]
+    fn fact_table_with_callers_roundtrip() {
+        let table = FactTable {
+            file: PathBuf::from("app/Services/Test.php"),
+            language: Language::Php,
+            functions: vec![],
+            warnings: vec![],
+            callers: vec![CallerFact {
+                symbol: "test".to_string(),
+                caller_file: PathBuf::from("app/Other.php"),
+                caller_line: 10,
+                context: "->test()".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&table).expect("serialize");
+        let restored: FactTable = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.callers.len(), 1);
     }
 }
