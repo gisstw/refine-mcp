@@ -30,6 +30,19 @@ Look for these pattern combinations in the fact tables:
 7. `state_mutations` with kind `Create` and no unique constraint or idempotency key — duplicate requests create duplicate records
 8. Multiple `state_mutations` in the same function but no `transaction` — partial success cannot be rolled back
 
+### Blast Radius (Caller Impact)
+9. `callers` in fact tables — if a function's signature (parameters, return type) changed, check every caller:
+   - Does the caller pass the correct argument types in the correct order?
+   - Does the caller handle the new return semantics? (e.g., function changed from throw to return error array)
+   - Is the caller aware of new nullable returns or removed parameters?
+
+### Schema Constraints
+10. Cross-reference `state_mutations` targets with database schema:
+    - Is a VARCHAR column used for arithmetic (price, amount)?
+    - Does a Create mutation provide values for all NOT NULL columns without defaults?
+    - Is an ENUM column being set to a value outside its defined set?
+{schema_section}
+
 ## Rules
 
 - Only report **FATAL** and **HIGH** (skip MEDIUM/LOW)

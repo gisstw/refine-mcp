@@ -44,6 +44,8 @@ pub struct PrepareAttackParams {
     /// Number of red teams (2-4), or omit for auto-selection based on fact signals.
     /// Auto mode analyzes the fact tables and picks relevant red team roles.
     pub red_count: Option<u8>,
+    /// JSON-encoded `SchemaSnapshot` from `extract_migration_facts` (optional)
+    pub schema_json: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -77,6 +79,29 @@ pub struct DiscoverAndExtractParams {
     pub plan_dir: Option<String>,
     /// If true, only extract from files changed in `git diff HEAD` (incremental mode)
     pub diff_only: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct ExpandBlastRadiusParams {
+    /// Function/method names to search for callers.
+    /// If empty or omitted, auto-detects from git diff of plan files.
+    pub symbols: Option<Vec<String>>,
+    /// Directories to search (default: `["app/", "routes/"]`)
+    pub search_paths: Option<Vec<String>>,
+    /// Files to exclude from results (typically the source files being modified)
+    pub exclude_files: Option<Vec<String>>,
+    /// Plan file paths (used for auto-detecting changed symbols via git diff)
+    pub plan_files: Option<Vec<String>>,
+    /// Max grep results per symbol (default: 20)
+    pub max_per_symbol: Option<usize>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct ExtractMigrationFactsParams {
+    /// Path to migration directory (default: database/migrations)
+    pub migration_dir: Option<String>,
+    /// Only include tables matching these names (default: all)
+    pub table_filter: Option<Vec<String>>,
 }
 
 // ─── MCP Server ────────────────────────────────────────────────
@@ -407,22 +432,73 @@ impl RefineServer {
                 rmcp::ErrorData::invalid_params(format!("Invalid facts_json: {e}"), None)
             })?;
 
+        // Build schema section for prompt injection
+        let schema_section = if let Some(ref schema_str) = params.0.schema_json {
+            match serde_json::from_str::<refine_mcp::facts::types::SchemaSnapshot>(schema_str) {
+                Ok(schema) => {
+                    // Only include tables referenced by state_mutations
+                    let mutation_targets: std::collections::HashSet<String> = fact_tables
+                        .iter()
+                        .flat_map(|t| t.functions.iter())
+                        .flat_map(|f| f.state_mutations.iter())
+                        .map(|m| m.target.to_lowercase())
+                        .collect();
+
+                    let relevant_tables: Vec<_> = schema
+                        .tables
+                        .iter()
+                        .filter(|t| {
+                            mutation_targets
+                                .iter()
+                                .any(|mt| mt.contains(&t.table_name.to_lowercase()))
+                        })
+                        .collect();
+
+                    if relevant_tables.is_empty() && schema.type_warnings.is_empty() {
+                        String::new()
+                    } else {
+                        let filtered = serde_json::json!({
+                            "relevant_tables": relevant_tables,
+                            "type_warnings": schema.type_warnings,
+                        });
+                        format!(
+                            "\n```json\n{}\n```\n",
+                            serde_json::to_string_pretty(&filtered).unwrap_or_default()
+                        )
+                    }
+                }
+                Err(_) => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
         let prompts = if let Some(n) = params.0.red_count {
             // Explicit count: use fixed N teams (RT-A..RT-D in order)
-            refine_mcp::prompts::build_red_team_prompts_n(
+            let count = (n as usize).clamp(2, 4);
+            let ids: Vec<refine_mcp::types::RedTeamId> = [
+                refine_mcp::types::RedTeamId::RtA,
+                refine_mcp::types::RedTeamId::RtB,
+                refine_mcp::types::RedTeamId::RtC,
+                refine_mcp::types::RedTeamId::RtD,
+            ][..count]
+                .to_vec();
+            refine_mcp::prompts::build_red_team_prompts_with_schema(
                 mode,
                 &plan_content,
                 &fact_tables,
-                n as usize,
+                &ids,
+                &schema_section,
             )
         } else {
             // Auto-select: pick relevant teams based on fact signals
             let teams = refine_mcp::prompts::auto_select_red_teams(&fact_tables);
-            refine_mcp::prompts::build_red_team_prompts_selected(
+            refine_mcp::prompts::build_red_team_prompts_with_schema(
                 mode,
                 &plan_content,
                 &fact_tables,
                 &teams,
+                &schema_section,
             )
         };
 
@@ -433,6 +509,130 @@ impl RefineServer {
             "red_count": prompts.len(),
             "teams": team_ids,
             "auto_selected": params.0.red_count.is_none(),
+        });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&output).unwrap_or_default(),
+        )]))
+    }
+
+    // ── Tool 3b: expand_blast_radius ─────────────────────────
+
+    #[tool(
+        description = "Find all callers of specified functions using grep. Auto-detects changed function signatures from git diff if symbols not provided. Returns call graph and expanded file list for feeding into extract_facts."
+    )]
+    async fn expand_blast_radius(
+        &self,
+        params: Parameters<ExpandBlastRadiusParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let search_paths: Vec<PathBuf> = params
+            .0
+            .search_paths
+            .unwrap_or_else(|| vec!["app/".to_string(), "routes/".to_string()])
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        let exclude_files: Vec<PathBuf> = params
+            .0
+            .exclude_files
+            .unwrap_or_default()
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        let max_per_symbol = params.0.max_per_symbol.unwrap_or(20);
+
+        let symbols = match params.0.symbols {
+            Some(syms) if !syms.is_empty() => syms,
+            _ => {
+                let plan_files: Vec<PathBuf> = params
+                    .0
+                    .plan_files
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect();
+                refine_mcp::facts::blast_radius::extract_changed_symbols(&plan_files)
+            }
+        };
+
+        if symbols.is_empty() {
+            let output = serde_json::json!({
+                "call_graph": {},
+                "expanded_files": [],
+                "total_callers": 0,
+                "symbols_searched": [],
+                "note": "No symbols to search. Provide symbols or ensure plan files have git changes."
+            });
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&output).unwrap_or_default(),
+            )]));
+        }
+
+        let result = refine_mcp::facts::blast_radius::expand_blast_radius(
+            &symbols,
+            &search_paths,
+            &exclude_files,
+            max_per_symbol,
+        );
+
+        let output = serde_json::json!({
+            "call_graph": result.call_graph,
+            "expanded_files": result.expanded_files,
+            "total_callers": result.total_callers,
+            "symbols_searched": symbols,
+        });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&output).unwrap_or_default(),
+        )]))
+    }
+
+    // ── Tool 3c: extract_migration_facts ───────────────────────
+
+    #[tool(
+        description = "Parse Laravel migration files to extract database schema: column types, nullable, defaults, foreign keys, indexes. Generates warnings for risky patterns (VARCHAR price columns, ENUM pitfalls). Feed the output into prepare_attack as schema_json."
+    )]
+    async fn extract_migration_facts(
+        &self,
+        params: Parameters<ExtractMigrationFactsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let migration_dir = params
+            .0
+            .migration_dir
+            .unwrap_or_else(|| "database/migrations".to_string());
+
+        let dir_path = validate_dir(&migration_dir)?;
+
+        let snapshot = refine_mcp::facts::migration::extract_migration_facts(&dir_path).map_err(
+            |e| rmcp::ErrorData::internal_error(format!("Migration parse failed: {e}"), None),
+        )?;
+
+        let filtered = if let Some(filter) = params.0.table_filter {
+            refine_mcp::facts::types::SchemaSnapshot {
+                tables: snapshot
+                    .tables
+                    .into_iter()
+                    .filter(|t| filter.iter().any(|f| t.table_name.contains(f)))
+                    .collect(),
+                type_warnings: snapshot
+                    .type_warnings
+                    .into_iter()
+                    .filter(|w| filter.iter().any(|f| w.contains(f)))
+                    .collect(),
+            }
+        } else {
+            snapshot
+        };
+
+        let table_count = filtered.tables.len();
+        let column_count: usize = filtered.tables.iter().map(|t| t.columns.len()).sum();
+        let warning_count = filtered.type_warnings.len();
+
+        let output = serde_json::json!({
+            "schema": filtered,
+            "table_count": table_count,
+            "column_count": column_count,
+            "warning_count": warning_count,
         });
 
         Ok(CallToolResult::success(vec![Content::text(

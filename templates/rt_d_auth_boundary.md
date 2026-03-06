@@ -31,6 +31,8 @@ Look for these pattern combinations in the fact tables:
 8. `state_mutations` modify user account/role/permission models — requires highest-level verification
 9. `external_calls` involve webhook/callback URLs sourced from user input — can be redirected
 
+{schema_section}
+
 ## Rules
 
 - Only report **FATAL** and **HIGH** (skip MEDIUM/LOW)

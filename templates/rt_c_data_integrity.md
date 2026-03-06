@@ -31,6 +31,13 @@ Look for these pattern combinations in the fact tables:
 8. `null_risks` values used in `state_mutations` — null written to NOT NULL column
 9. `warnings` containing "without transaction" — already flagged consistency risks
 
+### Schema Validation
+10. Cross-reference `state_mutations` with database schema warnings:
+    - VARCHAR price columns: string concatenation instead of addition?
+    - ENUM columns: writing values outside the defined set?
+    - Foreign key cascades: does deleting a parent silently remove child records?
+{schema_section}
+
 ## Rules
 
 - Only report **FATAL** and **HIGH** (skip MEDIUM/LOW)

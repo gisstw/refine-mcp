@@ -30,6 +30,8 @@ Flag findings you believe are false positives (with reasoning):
 - Example: "F-003's null risk cannot trigger in this context because the outer match already ensures non-null"
 - Only flag false positives you are confident about
 
+{schema_section}
+
 ## Rules
 
 - Do not repeat existing Findings (those have already been processed by Rust)

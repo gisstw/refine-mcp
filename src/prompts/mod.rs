@@ -54,7 +54,8 @@ pub fn build_red_team_prompts_selected(
             let template = template_for(*id);
             let prompt = template
                 .replace("{plan_content}", plan_content)
-                .replace("{fact_tables}", &facts_json);
+                .replace("{fact_tables}", &facts_json)
+                .replace("{schema_section}", "");
             RedTeamPrompt {
                 id: *id,
                 prompt,
@@ -145,6 +146,35 @@ pub fn build_red_team_prompts(
     build_red_team_prompts_n(mode, plan_content, fact_tables, mode.red_count())
 }
 
+/// Build red team prompts with optional schema section injection.
+#[must_use]
+pub fn build_red_team_prompts_with_schema(
+    mode: RefineMode,
+    plan_content: &str,
+    fact_tables: &[FactTable],
+    teams: &[RedTeamId],
+    schema_section: &str,
+) -> Vec<RedTeamPrompt> {
+    let facts_json =
+        serde_json::to_string_pretty(fact_tables).unwrap_or_else(|_| "[]".to_string());
+
+    teams
+        .iter()
+        .map(|id| {
+            let template = template_for(*id);
+            let prompt = template
+                .replace("{plan_content}", plan_content)
+                .replace("{fact_tables}", &facts_json)
+                .replace("{schema_section}", schema_section);
+            RedTeamPrompt {
+                id: *id,
+                prompt,
+                recommended_model: mode.red_model().to_string(),
+            }
+        })
+        .collect()
+}
+
 fn template_for(id: RedTeamId) -> &'static str {
     match id {
         RedTeamId::RtA => TEMPLATE_RT_A,
@@ -169,7 +199,8 @@ pub fn build_blue_team_prompt(
 
     let prompt = TEMPLATE_BLUE
         .replace("{findings_json}", &findings_json)
-        .replace("{plan_summary}", plan_summary);
+        .replace("{plan_summary}", plan_summary)
+        .replace("{schema_section}", "");
 
     RedTeamPrompt {
         id: RedTeamId::BlueTeam,

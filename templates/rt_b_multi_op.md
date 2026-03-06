@@ -30,6 +30,15 @@ Look for these pattern combinations in the fact tables:
 7. Plan describes modifications that change `state_mutations` order or add new `external_calls` — existing dependents may be affected
 8. `catch_blocks` action changed from Rethrow to something else — error propagation semantics altered
 
+### Cross-Caller Conflicts
+9. `callers` — can two different callers invoke the same function concurrently with conflicting assumptions?
+   - Caller A uses old behavior, Caller B uses new behavior — race during deployment?
+   - Multiple callers in the same request chain — is the function idempotent?
+
+### Schema Race Conditions
+10. FK constraints + concurrent deletes — does deleting a parent row cascade-delete children that another request is reading?
+{schema_section}
+
 ## Rules
 
 - Only report **FATAL** and **HIGH** (skip MEDIUM/LOW)
