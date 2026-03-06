@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FactTable {
     pub file: PathBuf,
+    #[serde(default)]
     pub language: Language,
     #[serde(default)]
     pub functions: Vec<FunctionFact>,
@@ -16,9 +17,10 @@ pub struct FactTable {
     pub callers: Vec<CallerFact>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
+    #[default]
     Php,
     Rust,
     TypeScript,
@@ -125,7 +127,9 @@ pub enum MutationKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NullRiskFact {
     pub line: u32,
+    #[serde(default)]
     pub expression: String,
+    #[serde(default)]
     pub reason: String,
 }
 

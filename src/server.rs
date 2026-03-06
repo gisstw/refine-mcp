@@ -37,8 +37,12 @@ pub struct ExtractFactsParams {
 pub struct PrepareAttackParams {
     /// Path to the plan file
     pub plan_path: String,
-    /// JSON-encoded fact tables from `extract_facts`
-    pub facts_json: String,
+    /// JSON-encoded fact tables from `extract_facts`.
+    /// Either provide this OR `facts_file` (path to a JSON file containing the fact tables).
+    pub facts_json: Option<String>,
+    /// Path to a JSON file containing fact tables (alternative to `facts_json`).
+    /// Useful when output exceeds inline size limits.
+    pub facts_file: Option<String>,
     /// Refine mode: default, lite, or auto
     pub mode: Option<String>,
     /// Number of red teams (2-4), or omit for auto-selection based on fact signals.
@@ -426,11 +430,63 @@ impl RefineServer {
             rmcp::ErrorData::invalid_params(format!("Failed to read plan: {e}"), None)
         })?;
 
-        // Parse fact tables
-        let fact_tables: Vec<FactTable> =
-            serde_json::from_str(&params.0.facts_json).map_err(|e| {
-                rmcp::ErrorData::invalid_params(format!("Invalid facts_json: {e}"), None)
-            })?;
+        // Parse fact tables from JSON string or file
+        let facts_str = match (&params.0.facts_json, &params.0.facts_file) {
+            (Some(json), _) => json.clone(),
+            (None, Some(file_path)) => {
+                // Read from file — handles Claude Code's oversized output files
+                std::fs::read_to_string(file_path).map_err(|e| {
+                    rmcp::ErrorData::invalid_params(format!("Failed to read facts_file '{file_path}': {e}"), None)
+                })?
+            }
+            (None, None) => {
+                return Err(rmcp::ErrorData::invalid_params(
+                    "Either facts_json or facts_file must be provided".to_string(),
+                    None,
+                ));
+            }
+        };
+
+        // If facts_file was a Claude Code tool-results JSON wrapper, unwrap it
+        let facts_json_str = if facts_str.trim_start().starts_with('[') {
+            // Could be either raw fact tables array or Claude Code wrapper [{type, text}]
+            if let Ok(wrapper) = serde_json::from_str::<Vec<serde_json::Value>>(&facts_str) {
+                if let Some(first) = wrapper.first() {
+                    if first.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        // Claude Code wrapper format — extract the text field
+                        first.get("text").and_then(|t| t.as_str()).unwrap_or(&facts_str).to_string()
+                    } else {
+                        facts_str
+                    }
+                } else {
+                    facts_str
+                }
+            } else {
+                facts_str
+            }
+        } else {
+            facts_str
+        };
+
+        // Parse the inner JSON to extract fact_tables array
+        let fact_tables: Vec<FactTable> = if let Ok(outer) = serde_json::from_str::<serde_json::Value>(&facts_json_str) {
+            if let Some(ft) = outer.get("fact_tables") {
+                // discover_and_extract output format: {fact_tables: [...], plan_path: ...}
+                serde_json::from_value(ft.clone()).map_err(|e| {
+                    rmcp::ErrorData::invalid_params(format!("Invalid fact_tables in response: {e}"), None)
+                })?
+            } else {
+                // Direct array of FactTable
+                serde_json::from_value(outer).map_err(|e| {
+                    rmcp::ErrorData::invalid_params(format!("Invalid facts_json: {e}"), None)
+                })?
+            }
+        } else {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!("Invalid JSON in facts: {}", &facts_json_str[..facts_json_str.len().min(200)]),
+                None,
+            ));
+        };
 
         // Build schema section for prompt injection
         let schema_section = if let Some(ref schema_str) = params.0.schema_json {
