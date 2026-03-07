@@ -36,6 +36,43 @@ Plan File ───────────────────────�
 
 **Key insight**: LLMs are good at *reasoning* about code but expensive at *reading* it. Tree-sitter reads the code (free, 100% accurate), then LLMs only reason about the structured facts (small input, focused output). This cuts red team tokens by ~66% and blue team tokens by ~80%.
 
+## Why This Approach?
+
+Most AI code review tools (CodeRabbit, Sourcery, etc.) treat code as prose — feeding raw diffs to an LLM and hoping it spots issues. This leads to hallucinations, missed concurrency bugs, and wasted tokens.
+
+**refine-mcp takes a different path:**
+
+| Aspect | Traditional AI Review | refine-mcp |
+|--------|----------------------|------------|
+| Input to LLM | Raw code / diff (thousands of lines) | Structured fact tables (transactions, locks, mutations, catch blocks) |
+| Analysis basis | "Read and guess" | Grounded in AST-extracted facts |
+| Concurrency bugs | Usually missed (requires multi-step reasoning) | Dedicated RT-B team with lock/transaction facts |
+| False positives | High (no filtering) | Blue team cross-analysis + persistent state tracking |
+| Token cost | ~100% of code as input | ~34% (red team) / ~20% (blue team) |
+| Multi-round tracking | None | `.state.json` — fixed/false-positive findings don't recur |
+
+### Smart Red Team Dispatch
+
+Red teams aren't blindly thrown at code. Each team has a **specialized prompt template** focused on specific vulnerability classes, and teams are **dynamically activated based on fact signals**:
+
+```
+Facts extracted by tree-sitter
+    │
+    ├─ Mutations without transaction? ──────► Activate RT-C (data integrity)
+    ├─ External calls inside transaction? ──► Activate RT-C
+    ├─ Auth/permission in file paths? ──────► Activate RT-D (auth boundary)
+    └─ Always ──────────────────────────────► RT-A (single-op) + RT-B (multi-op)
+```
+
+This means zero LLM cost for the dispatch decision itself — tree-sitter facts drive the routing.
+
+### Two Orthogonal Dimensions
+
+1. **Red team role** = *what to attack* (prompt template specialization)
+2. **Mode** = *how smart the model* (opus/sonnet/haiku)
+
+These are independent. You can run RT-A through RT-D with haiku for quick screening, or with opus for deep analysis.
+
 ## Supported Languages
 
 | Language | Extractor | Grammar |
