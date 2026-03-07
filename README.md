@@ -66,6 +66,22 @@ Facts extracted by tree-sitter
 
 This means zero LLM cost for the dispatch decision itself — tree-sitter facts drive the routing.
 
+When `red_count` is omitted, `prepare_attack` returns a `dispatch` field explaining **why** each team was activated or skipped:
+
+```json
+{
+  "dispatch": {
+    "activated": ["RtA", "RtB", "RtC"],
+    "reasoning": [
+      "RT-A (single-op): always active",
+      "RT-B (multi-op): always active",
+      "RT-C (data integrity): 3 mutations without transaction in PaymentService.php::transferFunds",
+      "RT-D (auth boundary): skipped (no signals)"
+    ]
+  }
+}
+```
+
 ### Two Orthogonal Dimensions
 
 1. **Red team role** = *what to attack* (prompt template specialization)

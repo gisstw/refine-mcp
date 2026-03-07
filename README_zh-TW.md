@@ -67,6 +67,22 @@ tree-sitter 提取的事實
 
 分派決策本身**零 LLM 成本** — 完全由 tree-sitter 事實驅動。
 
+省略 `red_count` 時，`prepare_attack` 回傳 `dispatch` 欄位，解釋**為什麼**每支紅隊被啟用或跳過：
+
+```json
+{
+  "dispatch": {
+    "activated": ["RtA", "RtB", "RtC"],
+    "reasoning": [
+      "RT-A (single-op): always active",
+      "RT-B (multi-op): always active",
+      "RT-C (data integrity): 3 mutations without transaction in PaymentService.php::transferFunds",
+      "RT-D (auth boundary): skipped (no signals)"
+    ]
+  }
+}
+```
+
 ### 兩個正交維度
 
 1. **紅隊角色** = 攻擊什麼（prompt template 特化）
