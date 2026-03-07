@@ -2,7 +2,7 @@
 
 # refine-mcp
 
-**別讓 AI 讀 code 猜漏洞 — 讓它推理結構化事實。**
+**別讓 AI 猜漏洞 — 讓它推理結構化事實。**
 
 tree-sitter 從程式碼提取事實（交易、鎖、mutation、例外處理），LLM 紅隊只負責推理這些事實找漏洞，藍隊交叉分析過濾假陽性。全程透過 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 編排。
 

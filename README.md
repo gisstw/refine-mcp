@@ -2,7 +2,7 @@ English | [繁體中文](README_zh-TW.md)
 
 # refine-mcp
 
-**Stop letting AI read code and guess at bugs — make it reason over structured facts.**
+**Stop letting AI guess at bugs — make it reason over structured facts.**
 
 Tree-sitter extracts facts from your code (transactions, locks, mutations, catch blocks). LLM red teams reason over those facts to find real vulnerabilities. A blue team cross-analyzes and filters false positives. All orchestrated through the [Model Context Protocol](https://modelcontextprotocol.io/).
 
