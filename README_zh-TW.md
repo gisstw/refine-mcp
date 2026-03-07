@@ -180,6 +180,27 @@ cargo install refine-mcp
 | `findings_json` | string | 是 | synthesize 回傳的 JSON |
 | `mode` | string | 否 | 成本模式 |
 
+### expand_blast_radius
+
+搜尋被修改函數的呼叫者，評估變更影響範圍。
+
+| 參數 | 型別 | 必填 | 說明 |
+|------|------|------|------|
+| `symbols` | string[] | 否 | 要搜尋的函數名稱。省略時從 git diff 自動偵測 |
+| `search_paths` | string[] | 否 | 搜尋目錄（預設 `["app/", "routes/"]`） |
+| `exclude_files` | string[] | 否 | 排除的檔案（通常是正在修改的源檔案） |
+| `plan_files` | string[] | 否 | 計畫檔路徑（用於自動偵測變更的函數） |
+| `max_per_symbol` | number | 否 | 每個 symbol 的最大搜尋結果數（預設 20） |
+
+### extract_migration_facts
+
+從資料庫 migration 檔案提取 schema 資訊，供紅隊參考。
+
+| 參數 | 型別 | 必填 | 說明 |
+|------|------|------|------|
+| `migration_dir` | string | 否 | Migration 目錄路徑（預設 `database/migrations`） |
+| `table_filter` | string[] | 否 | 只包含指定的表名 |
+
 ## 紅隊角色
 
 | ID | 名稱 | 攻擊角度 | 自動選擇條件 |
@@ -222,7 +243,7 @@ cargo install refine-mcp
 
 本專案採用雙授權：
 
-- Apache License, Version 2.0（[LICENSE-APACHE](../LICENSE-APACHE)）
-- MIT License（[LICENSE-MIT](../LICENSE-MIT)）
+- Apache License, Version 2.0（[LICENSE-APACHE](LICENSE-APACHE)）
+- MIT License（[LICENSE-MIT](LICENSE-MIT)）
 
 您可自行選擇其一。

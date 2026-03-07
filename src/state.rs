@@ -122,7 +122,10 @@ fn state_path_from_plan(plan_path: &Path) -> PathBuf {
     if dir.ends_with("plans") {
         if let Some(parent) = dir.parent() {
             if parent.ends_with(".claude") {
-                return parent.join("refine-state").join(stem).with_extension("json");
+                return parent
+                    .join("refine-state")
+                    .join(stem)
+                    .with_extension("json");
             }
         }
     }
@@ -279,6 +282,9 @@ mod tests {
     #[test]
     fn state_path_from_plan_in_arbitrary_dir() {
         let path = state_path_from_plan(Path::new("/tmp/my-project/plan.md"));
-        assert_eq!(path, PathBuf::from("/tmp/my-project/refine-state-plan.json"));
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/my-project/refine-state-plan.json")
+        );
     }
 }

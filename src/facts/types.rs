@@ -12,7 +12,7 @@ pub struct FactTable {
     pub functions: Vec<FunctionFact>,
     #[serde(default)]
     pub warnings: Vec<String>,
-    /// Callers of functions in this file, populated by expand_blast_radius
+    /// Callers of functions in this file, populated by `expand_blast_radius`
     #[serde(default)]
     pub callers: Vec<CallerFact>,
 }
@@ -324,7 +324,10 @@ mod tests {
         let restored: SchemaSnapshot = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored.tables.len(), 1);
         assert_eq!(restored.tables[0].columns[0].col_type, "tinyInteger");
-        assert_eq!(restored.tables[0].foreign_keys[0].on_delete.as_deref(), Some("CASCADE"));
+        assert_eq!(
+            restored.tables[0].foreign_keys[0].on_delete.as_deref(),
+            Some("CASCADE")
+        );
     }
 
     #[test]

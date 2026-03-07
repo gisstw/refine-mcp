@@ -2,7 +2,7 @@
 
 **Grounded red-blue adversarial plan refinement via MCP.**
 
-[繁體中文說明](docs/README_zh-TW.md)
+[繁體中文說明](README_zh-TW.md)
 
 Tree-sitter extracts structured facts from your code. LLM red teams find vulnerabilities in those facts. A blue team cross-analyzes and filters false positives. All orchestrated through the [Model Context Protocol](https://modelcontextprotocol.io/).
 
@@ -163,6 +163,27 @@ Backup the plan file and append a refinement section with findings.
 | `blue_result` | string | No | Blue team analysis output |
 | `findings_json` | string | Yes | JSON-encoded findings from synthesize |
 | `mode` | string | No | Cost mode |
+
+### expand_blast_radius
+
+Search for callers of modified functions to assess change impact.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `symbols` | string[] | No | Function names to search. Auto-detected from git diff if omitted |
+| `search_paths` | string[] | No | Directories to search (default: `["app/", "routes/"]`) |
+| `exclude_files` | string[] | No | Files to exclude from results |
+| `plan_files` | string[] | No | Plan files for auto-detecting changed symbols |
+| `max_per_symbol` | number | No | Max grep results per symbol (default: 20) |
+
+### extract_migration_facts
+
+Extract database schema from migration files for red team context.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `migration_dir` | string | No | Path to migrations (default: `database/migrations`) |
+| `table_filter` | string[] | No | Only include matching table names |
 
 ## Red Team Roles
 

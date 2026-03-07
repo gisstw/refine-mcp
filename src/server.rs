@@ -436,7 +436,10 @@ impl RefineServer {
             (None, Some(file_path)) => {
                 // Read from file — handles Claude Code's oversized output files
                 std::fs::read_to_string(file_path).map_err(|e| {
-                    rmcp::ErrorData::invalid_params(format!("Failed to read facts_file '{file_path}': {e}"), None)
+                    rmcp::ErrorData::invalid_params(
+                        format!("Failed to read facts_file '{file_path}': {e}"),
+                        None,
+                    )
                 })?
             }
             (None, None) => {
@@ -454,7 +457,11 @@ impl RefineServer {
                 if let Some(first) = wrapper.first() {
                     if first.get("type").and_then(|t| t.as_str()) == Some("text") {
                         // Claude Code wrapper format — extract the text field
-                        first.get("text").and_then(|t| t.as_str()).unwrap_or(&facts_str).to_string()
+                        first
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or(&facts_str)
+                            .to_string()
                     } else {
                         facts_str
                     }
@@ -469,24 +476,31 @@ impl RefineServer {
         };
 
         // Parse the inner JSON to extract fact_tables array
-        let fact_tables: Vec<FactTable> = if let Ok(outer) = serde_json::from_str::<serde_json::Value>(&facts_json_str) {
-            if let Some(ft) = outer.get("fact_tables") {
-                // discover_and_extract output format: {fact_tables: [...], plan_path: ...}
-                serde_json::from_value(ft.clone()).map_err(|e| {
-                    rmcp::ErrorData::invalid_params(format!("Invalid fact_tables in response: {e}"), None)
-                })?
+        let fact_tables: Vec<FactTable> =
+            if let Ok(outer) = serde_json::from_str::<serde_json::Value>(&facts_json_str) {
+                if let Some(ft) = outer.get("fact_tables") {
+                    // discover_and_extract output format: {fact_tables: [...], plan_path: ...}
+                    serde_json::from_value(ft.clone()).map_err(|e| {
+                        rmcp::ErrorData::invalid_params(
+                            format!("Invalid fact_tables in response: {e}"),
+                            None,
+                        )
+                    })?
+                } else {
+                    // Direct array of FactTable
+                    serde_json::from_value(outer).map_err(|e| {
+                        rmcp::ErrorData::invalid_params(format!("Invalid facts_json: {e}"), None)
+                    })?
+                }
             } else {
-                // Direct array of FactTable
-                serde_json::from_value(outer).map_err(|e| {
-                    rmcp::ErrorData::invalid_params(format!("Invalid facts_json: {e}"), None)
-                })?
-            }
-        } else {
-            return Err(rmcp::ErrorData::invalid_params(
-                format!("Invalid JSON in facts: {}", &facts_json_str[..facts_json_str.len().min(200)]),
-                None,
-            ));
-        };
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!(
+                        "Invalid JSON in facts: {}",
+                        &facts_json_str[..facts_json_str.len().min(200)]
+                    ),
+                    None,
+                ));
+            };
 
         // Build schema section for prompt injection
         let schema_section = if let Some(ref schema_str) = params.0.schema_json {
@@ -659,9 +673,10 @@ impl RefineServer {
 
         let dir_path = validate_dir(&migration_dir)?;
 
-        let snapshot = refine_mcp::facts::migration::extract_migration_facts(&dir_path).map_err(
-            |e| rmcp::ErrorData::internal_error(format!("Migration parse failed: {e}"), None),
-        )?;
+        let snapshot =
+            refine_mcp::facts::migration::extract_migration_facts(&dir_path).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("Migration parse failed: {e}"), None)
+            })?;
 
         let filtered = if let Some(filter) = params.0.table_filter {
             refine_mcp::facts::types::SchemaSnapshot {

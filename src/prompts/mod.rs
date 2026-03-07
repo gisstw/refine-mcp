@@ -155,8 +155,7 @@ pub fn build_red_team_prompts_with_schema(
     teams: &[RedTeamId],
     schema_section: &str,
 ) -> Vec<RedTeamPrompt> {
-    let facts_json =
-        serde_json::to_string_pretty(fact_tables).unwrap_or_else(|_| "[]".to_string());
+    let facts_json = serde_json::to_string_pretty(fact_tables).unwrap_or_else(|_| "[]".to_string());
 
     teams
         .iter()

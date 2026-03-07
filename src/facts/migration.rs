@@ -8,13 +8,11 @@ use super::types::{ColumnFact, ForeignKeyFact, SchemaSnapshot, SchemaTable};
 
 // ─── Compiled Regexes ──────────────────────────────────────
 
-static RE_SCHEMA_CREATE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"Schema::create\(\s*['"]([^'"]+)['"]"#).expect("valid regex")
-});
+static RE_SCHEMA_CREATE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"Schema::create\(\s*['"]([^'"]+)['"]"#).expect("valid regex"));
 
-static RE_SCHEMA_TABLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"Schema::table\(\s*['"]([^'"]+)['"]"#).expect("valid regex")
-});
+static RE_SCHEMA_TABLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"Schema::table\(\s*['"]([^'"]+)['"]"#).expect("valid regex"));
 
 static RE_COLUMN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -26,9 +24,8 @@ static RE_COLUMN: LazyLock<Regex> = LazyLock::new(|| {
 static RE_NULLABLE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"->nullable\(\s*\)").expect("valid regex"));
 
-static RE_DEFAULT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"->default\(\s*([^)]+)\s*\)").expect("valid regex")
-});
+static RE_DEFAULT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"->default\(\s*([^)]+)\s*\)").expect("valid regex"));
 
 static RE_FOREIGN_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -37,9 +34,8 @@ static RE_FOREIGN_KEY: LazyLock<Regex> = LazyLock::new(|| {
     .expect("valid regex")
 });
 
-static RE_ON_DELETE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"->onDelete\(\s*['"]([^'"]+)['"]\s*\)"#).expect("valid regex")
-});
+static RE_ON_DELETE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"->onDelete\(\s*['"]([^'"]+)['"]\s*\)"#).expect("valid regex"));
 
 static RE_INDEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\$table->(?:index|unique)\(\s*['"]([^'"]+)['"]\s*\)"#).expect("valid regex")
@@ -52,11 +48,7 @@ pub fn extract_migration_facts(migration_dir: &Path) -> anyhow::Result<SchemaSna
     let mut files: Vec<_> = std::fs::read_dir(migration_dir)
         .with_context(|| format!("reading migration dir: {}", migration_dir.display()))?
         .filter_map(Result::ok)
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "php")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "php"))
         .map(|e| e.path())
         .collect();
 
@@ -79,7 +71,9 @@ pub fn extract_migration_facts(migration_dir: &Path) -> anyhow::Result<SchemaSna
     snapshot.type_warnings = warnings;
 
     // Sort tables by name for deterministic output
-    snapshot.tables.sort_by(|a, b| a.table_name.cmp(&b.table_name));
+    snapshot
+        .tables
+        .sort_by(|a, b| a.table_name.cmp(&b.table_name));
 
     Ok(snapshot)
 }
@@ -214,8 +208,22 @@ fn parse_table_line(line: &str, table: &mut SchemaTable) {
     // Handle morphs specially — they create two columns
     if col_type == "morphs" || col_type == "nullableMorphs" {
         let nullable = col_type == "nullableMorphs";
-        add_column_if_missing(table, &format!("{col_name}_type"), "string", nullable, false, None);
-        add_column_if_missing(table, &format!("{col_name}_id"), "unsignedBigInteger", nullable, false, None);
+        add_column_if_missing(
+            table,
+            &format!("{col_name}_type"),
+            "string",
+            nullable,
+            false,
+            None,
+        );
+        add_column_if_missing(
+            table,
+            &format!("{col_name}_id"),
+            "unsignedBigInteger",
+            nullable,
+            false,
+            None,
+        );
         return;
     }
 
@@ -237,7 +245,14 @@ fn parse_table_line(line: &str, table: &mut SchemaTable) {
         (false, None)
     };
 
-    add_column_if_missing(table, &col_name, &col_type, nullable, has_default, default_value);
+    add_column_if_missing(
+        table,
+        &col_name,
+        &col_type,
+        nullable,
+        has_default,
+        default_value,
+    );
 }
 
 fn add_column_if_missing(
@@ -279,7 +294,7 @@ mod tests {
         write_migration(
             dir.path(),
             "2024_01_01_000000_create_posts_table.php",
-            r#"<?php
+            r"<?php
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
@@ -295,7 +310,7 @@ return new class extends Migration {
         });
     }
 };
-"#,
+",
         );
 
         let snapshot = extract_migration_facts(dir.path()).unwrap();
@@ -326,14 +341,14 @@ return new class extends Migration {
         write_migration(
             dir.path(),
             "2024_01_02_000000_create_comments_table.php",
-            r#"<?php
+            r"<?php
 Schema::create('comments', function (Blueprint $table) {
     $table->id();
     $table->unsignedBigInteger('post_id');
     $table->text('body');
     $table->foreign('post_id')->references('id')->on('posts')->onDelete('cascade');
 });
-"#,
+",
         );
 
         let snapshot = extract_migration_facts(dir.path()).unwrap();
@@ -399,24 +414,24 @@ Schema::create('comments', function (Blueprint $table) {
         write_migration(
             dir.path(),
             "2024_01_01_000000_create_users_table.php",
-            r#"<?php
+            r"<?php
 Schema::create('users', function (Blueprint $table) {
     $table->id();
     $table->string('name');
     $table->string('email');
 });
-"#,
+",
         );
 
         // Second migration alters the table
         write_migration(
             dir.path(),
             "2024_01_02_000000_add_avatar_to_users_table.php",
-            r#"<?php
+            r"<?php
 Schema::table('users', function (Blueprint $table) {
     $table->string('avatar')->nullable();
 });
-"#,
+",
         );
 
         let snapshot = extract_migration_facts(dir.path()).unwrap();

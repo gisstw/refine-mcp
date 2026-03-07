@@ -25,8 +25,7 @@ static RE_COMMENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(?://|/?\*|#)").expect("valid regex"));
 
 /// Matches `use` statements
-static RE_USE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*use\s+").expect("valid regex"));
+static RE_USE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*use\s+").expect("valid regex"));
 
 /// Matches unified diff file header `+++ b/filepath`
 static RE_DIFF_FILE: LazyLock<Regex> =
@@ -60,6 +59,7 @@ pub struct DiffHunk {
 
 /// Searches for callers of each symbol via `grep -rnw` and returns the
 /// aggregated blast radius.
+#[must_use]
 pub fn expand_blast_radius(
     symbols: &[String],
     search_paths: &[PathBuf],
@@ -86,6 +86,7 @@ pub fn expand_blast_radius(
 /// Extracts function/method names whose signatures changed according to
 /// `git diff HEAD --unified=0`. Falls back to extracting all non-private
 /// function names from the plan files if git diff is unavailable.
+#[must_use]
 pub fn extract_changed_symbols(plan_files: &[PathBuf]) -> Vec<String> {
     let diff_output = Command::new("git")
         .args(["diff", "HEAD", "--unified=0"])
@@ -114,9 +115,8 @@ pub fn extract_changed_symbols(plan_files: &[PathBuf]) -> Vec<String> {
                 }
 
                 // Parse the file with tree-sitter to find method declarations
-                let source = match std::fs::read_to_string(plan_file) {
-                    Ok(s) => s,
-                    Err(_) => continue,
+                let Ok(source) = std::fs::read_to_string(plan_file) else {
+                    continue;
                 };
 
                 let mut parser = tree_sitter::Parser::new();
@@ -125,9 +125,8 @@ pub fn extract_changed_symbols(plan_files: &[PathBuf]) -> Vec<String> {
                     continue;
                 }
 
-                let tree = match parser.parse(&source, None) {
-                    Some(t) => t,
-                    None => continue,
+                let Some(tree) = parser.parse(&source, None) else {
+                    continue;
                 };
 
                 find_changed_methods(&tree, source.as_bytes(), &file_hunks, &mut symbols);
@@ -171,7 +170,10 @@ pub fn parse_grep_output(
         let context = caps[3].trim();
 
         // Skip excluded files (compare by path suffix)
-        if exclude_set.iter().any(|ex| file.ends_with(ex.as_str()) || ex.ends_with(file)) {
+        if exclude_set
+            .iter()
+            .any(|ex| file.ends_with(ex.as_str()) || ex.ends_with(file))
+        {
             continue;
         }
 
@@ -228,10 +230,10 @@ pub fn parse_diff_hunks(diff: &str) -> HashMap<&str, Vec<DiffHunk>> {
                     .get(2)
                     .map_or(1, |m| m.as_str().parse::<u32>().unwrap_or(1));
 
-                result
-                    .entry(file)
-                    .or_default()
-                    .push(DiffHunk { new_start, new_count });
+                result.entry(file).or_default().push(DiffHunk {
+                    new_start,
+                    new_count,
+                });
             }
         }
     }
@@ -296,9 +298,8 @@ fn fallback_extract_symbols(plan_files: &[PathBuf]) -> Vec<String> {
     let mut symbols = Vec::new();
 
     for file in plan_files {
-        let source = match std::fs::read_to_string(file) {
-            Ok(s) => s,
-            Err(_) => continue,
+        let Ok(source) = std::fs::read_to_string(file) else {
+            continue;
         };
 
         let mut parser = tree_sitter::Parser::new();
@@ -307,9 +308,8 @@ fn fallback_extract_symbols(plan_files: &[PathBuf]) -> Vec<String> {
             continue;
         }
 
-        let tree = match parser.parse(&source, None) {
-            Some(t) => t,
-            None => continue,
+        let Some(tree) = parser.parse(&source, None) else {
+            continue;
         };
 
         extract_all_function_names(&tree, source.as_bytes(), &mut symbols);
@@ -351,13 +351,11 @@ fn find_methods_recursive(
                 // Signature area: from method start to body `{` start
                 #[allow(clippy::cast_possible_truncation)]
                 let method_start = node.start_position().row as u32 + 1; // 1-based
-                let body_start = node
-                    .child_by_field_name("body")
-                    .map_or(method_start, |b| {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let s = b.start_position().row as u32 + 1;
-                        s
-                    });
+                let body_start = node.child_by_field_name("body").map_or(method_start, |b| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let s = b.start_position().row as u32 + 1;
+                    s
+                });
 
                 for hunk in hunks {
                     let hunk_end = hunk.new_start + hunk.new_count;
@@ -382,11 +380,7 @@ fn find_methods_recursive(
 }
 
 /// Extracts all non-private function/method names from a tree-sitter AST.
-fn extract_all_function_names(
-    tree: &tree_sitter::Tree,
-    source: &[u8],
-    symbols: &mut Vec<String>,
-) {
+fn extract_all_function_names(tree: &tree_sitter::Tree, source: &[u8], symbols: &mut Vec<String>) {
     let root = tree.root_node();
     let mut cursor = root.walk();
     extract_names_recursive(&mut cursor, source, symbols);
@@ -466,11 +460,10 @@ src/service.rs:20:    $this->processPayment($amount);
 
     #[test]
     fn parse_grep_output_max_results() {
+        use std::fmt::Write;
         let mut lines = String::new();
         for i in 1..=30 {
-            lines.push_str(&format!(
-                "src/file{i}.rs:{i}:    call_target();\n"
-            ));
+            let _ = writeln!(lines, "src/file{i}.rs:{i}:    call_target();");
         }
 
         let results = parse_grep_output(&lines, "call_target", &[], 5);
@@ -496,12 +489,30 @@ diff --git a/app/Models/Bar.php b/app/Models/Bar.php
 
         let foo_hunks = &hunks["app/Services/Foo.php"];
         assert_eq!(foo_hunks.len(), 2);
-        assert_eq!(foo_hunks[0], DiffHunk { new_start: 10, new_count: 5 });
-        assert_eq!(foo_hunks[1], DiffHunk { new_start: 32, new_count: 2 });
+        assert_eq!(
+            foo_hunks[0],
+            DiffHunk {
+                new_start: 10,
+                new_count: 5
+            }
+        );
+        assert_eq!(
+            foo_hunks[1],
+            DiffHunk {
+                new_start: 32,
+                new_count: 2
+            }
+        );
 
         let bar_hunks = &hunks["app/Models/Bar.php"];
         assert_eq!(bar_hunks.len(), 1);
-        assert_eq!(bar_hunks[0], DiffHunk { new_start: 5, new_count: 1 });
+        assert_eq!(
+            bar_hunks[0],
+            DiffHunk {
+                new_start: 5,
+                new_count: 1
+            }
+        );
     }
 
     #[test]
@@ -550,6 +561,12 @@ src/main.rs:10:    processPayment(42);
 ";
         let hunks = parse_diff_hunks(diff);
         assert_eq!(hunks.len(), 1);
-        assert_eq!(hunks["src/main.rs"][0], DiffHunk { new_start: 5, new_count: 1 });
+        assert_eq!(
+            hunks["src/main.rs"][0],
+            DiffHunk {
+                new_start: 5,
+                new_count: 1
+            }
+        );
     }
 }
