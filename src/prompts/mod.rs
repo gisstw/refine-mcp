@@ -79,23 +79,50 @@ pub fn build_red_team_prompts_selected(
 /// | catch blocks with `SilentSwallow` | RT-C (data integrity) |
 /// | file path contains auth/permission/middleware/login/session | RT-D (auth boundary) |
 /// | null risks present | (already covered by RT-A) |
+/// Result of automatic red team selection with reasoning.
+#[derive(Debug, Clone)]
+pub struct DispatchResult {
+    /// Which red teams were activated.
+    pub teams: Vec<RedTeamId>,
+    /// Human-readable reasoning for each dispatch decision.
+    pub reasoning: Vec<String>,
+}
+
 #[must_use]
-pub fn auto_select_red_teams(fact_tables: &[FactTable]) -> Vec<RedTeamId> {
+pub fn auto_select_red_teams(fact_tables: &[FactTable]) -> DispatchResult {
     let mut teams = vec![RedTeamId::RtA, RedTeamId::RtB];
+    let mut reasoning = vec![
+        "RT-A (single-op): always active".to_string(),
+        "RT-B (multi-op): always active".to_string(),
+    ];
 
     let mut need_rt_c = false;
+    let mut integrity_reasons: Vec<String> = Vec::new();
     let mut need_rt_d = false;
+    let mut auth_reasons: Vec<String> = Vec::new();
 
     for table in fact_tables {
+        let file_name = table.file.file_name().unwrap_or_default().to_string_lossy();
+
         // RT-C signals: data integrity concerns
         for f in &table.functions {
             // Mutations without transaction = data integrity risk
             if f.state_mutations.len() >= 2 && f.transaction.is_none() {
                 need_rt_c = true;
+                integrity_reasons.push(format!(
+                    "{} mutations without transaction in {}::{}",
+                    f.state_mutations.len(),
+                    file_name,
+                    f.name
+                ));
             }
             // External call inside transaction = partial failure risk
             if f.external_calls.iter().any(|e| e.in_transaction) {
                 need_rt_c = true;
+                integrity_reasons.push(format!(
+                    "external call inside transaction in {}::{}",
+                    file_name, f.name
+                ));
             }
             // Silent swallow = data loss risk
             if f.catch_blocks
@@ -103,34 +130,60 @@ pub fn auto_select_red_teams(fact_tables: &[FactTable]) -> Vec<RedTeamId> {
                 .any(|c| c.action == crate::facts::types::CatchAction::SilentSwallow)
             {
                 need_rt_c = true;
+                integrity_reasons.push(format!(
+                    "silent exception swallow in {}::{}",
+                    file_name, f.name
+                ));
             }
         }
 
         // RT-D signals: auth/permission boundary concerns
         let path_lower = table.file.to_string_lossy().to_lowercase();
-        if path_lower.contains("auth")
-            || path_lower.contains("permission")
-            || path_lower.contains("middleware")
-            || path_lower.contains("login")
-            || path_lower.contains("session")
-            || path_lower.contains("guard")
-            || path_lower.contains("policy")
-            || path_lower.contains("role")
-            || path_lower.contains("access")
-            || path_lower.contains("token")
-        {
-            need_rt_d = true;
+        let auth_keywords = [
+            "auth",
+            "permission",
+            "middleware",
+            "login",
+            "session",
+            "guard",
+            "policy",
+            "role",
+            "access",
+            "token",
+        ];
+        for kw in &auth_keywords {
+            if path_lower.contains(kw) {
+                need_rt_d = true;
+                auth_reasons.push(format!("file path contains '{kw}': {file_name}"));
+                break;
+            }
         }
     }
 
     if need_rt_c {
         teams.push(RedTeamId::RtC);
-    }
-    if need_rt_d {
-        teams.push(RedTeamId::RtD);
+        // Deduplicate and cap at 3 reasons for brevity
+        integrity_reasons.dedup();
+        let summary: Vec<&str> = integrity_reasons
+            .iter()
+            .map(String::as_str)
+            .take(3)
+            .collect();
+        reasoning.push(format!("RT-C (data integrity): {}", summary.join("; ")));
+    } else {
+        reasoning.push("RT-C (data integrity): skipped (no signals)".to_string());
     }
 
-    teams
+    if need_rt_d {
+        teams.push(RedTeamId::RtD);
+        auth_reasons.dedup();
+        let summary: Vec<&str> = auth_reasons.iter().map(String::as_str).take(3).collect();
+        reasoning.push(format!("RT-D (auth boundary): {}", summary.join("; ")));
+    } else {
+        reasoning.push("RT-D (auth boundary): skipped (no auth signals)".to_string());
+    }
+
+    DispatchResult { teams, reasoning }
 }
 
 /// Build red team prompts with the mode's default `red_count` (always 2).
@@ -305,8 +358,22 @@ mod tests {
     fn auto_select_baseline_only() {
         // No special signals → only RT-A + RT-B
         let facts = vec![sample_fact_table()];
-        let teams = auto_select_red_teams(&facts);
-        assert_eq!(teams, vec![RedTeamId::RtA, RedTeamId::RtB]);
+        let dispatch = auto_select_red_teams(&facts);
+        assert_eq!(dispatch.teams, vec![RedTeamId::RtA, RedTeamId::RtB]);
+        // 4 reasoning entries: 2 active (RT-A, RT-B) + 2 skipped (RT-C, RT-D)
+        assert_eq!(
+            dispatch.reasoning.len(),
+            4,
+            "should have reasoning for all teams"
+        );
+        assert!(
+            dispatch.reasoning[2].contains("skipped"),
+            "RT-C should be skipped"
+        );
+        assert!(
+            dispatch.reasoning[3].contains("skipped"),
+            "RT-D should be skipped"
+        );
     }
 
     #[test]
@@ -341,14 +408,22 @@ mod tests {
             warnings: vec![],
             callers: vec![],
         }];
-        let teams = auto_select_red_teams(&facts);
+        let dispatch = auto_select_red_teams(&facts);
         assert!(
-            teams.contains(&RedTeamId::RtC),
+            dispatch.teams.contains(&RedTeamId::RtC),
             "should add RT-C for unprotected mutations"
         );
         assert!(
-            !teams.contains(&RedTeamId::RtD),
+            !dispatch.teams.contains(&RedTeamId::RtD),
             "should not add RT-D without auth signals"
+        );
+        assert!(
+            dispatch
+                .reasoning
+                .iter()
+                .any(|r| r.contains("mutations without transaction")),
+            "reasoning should mention mutations: {:?}",
+            dispatch.reasoning
         );
     }
 
@@ -361,10 +436,15 @@ mod tests {
             warnings: vec![],
             callers: vec![],
         }];
-        let teams = auto_select_red_teams(&facts);
+        let dispatch = auto_select_red_teams(&facts);
         assert!(
-            teams.contains(&RedTeamId::RtD),
+            dispatch.teams.contains(&RedTeamId::RtD),
             "should add RT-D for auth-related files"
+        );
+        assert!(
+            dispatch.reasoning.iter().any(|r| r.contains("auth")),
+            "reasoning should mention auth: {:?}",
+            dispatch.reasoning
         );
     }
 
@@ -397,10 +477,18 @@ mod tests {
             warnings: vec![],
             callers: vec![],
         }];
-        let teams = auto_select_red_teams(&facts);
+        let dispatch = auto_select_red_teams(&facts);
         assert!(
-            teams.contains(&RedTeamId::RtC),
+            dispatch.teams.contains(&RedTeamId::RtC),
             "external call in tx → RT-C"
+        );
+        assert!(
+            dispatch
+                .reasoning
+                .iter()
+                .any(|r| r.contains("external call inside transaction")),
+            "reasoning should mention external call: {:?}",
+            dispatch.reasoning
         );
     }
 
@@ -441,16 +529,27 @@ mod tests {
             warnings: vec![],
             callers: vec![],
         }];
-        let teams = auto_select_red_teams(&facts);
-        assert_eq!(teams.len(), 4, "should select all 4 teams: {teams:?}");
+        let dispatch = auto_select_red_teams(&facts);
         assert_eq!(
-            teams,
+            dispatch.teams.len(),
+            4,
+            "should select all 4 teams: {:?}",
+            dispatch.teams
+        );
+        assert_eq!(
+            dispatch.teams,
             vec![
                 RedTeamId::RtA,
                 RedTeamId::RtB,
                 RedTeamId::RtC,
                 RedTeamId::RtD
             ]
+        );
+        // Full suite should have reasoning for all teams
+        assert!(
+            dispatch.reasoning.len() >= 4,
+            "should have reasoning for each team: {:?}",
+            dispatch.reasoning
         );
     }
 

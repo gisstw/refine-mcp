@@ -543,7 +543,7 @@ impl RefineServer {
             String::new()
         };
 
-        let prompts = if let Some(n) = params.0.red_count {
+        let (prompts, auto_dispatch) = if let Some(n) = params.0.red_count {
             // Explicit count: use fixed N teams (RT-A..RT-D in order)
             let count = (n as usize).clamp(2, 4);
             let ids: Vec<refine_mcp::types::RedTeamId> = [
@@ -553,32 +553,46 @@ impl RefineServer {
                 refine_mcp::types::RedTeamId::RtD,
             ][..count]
                 .to_vec();
-            refine_mcp::prompts::build_red_team_prompts_with_schema(
+            let prompts = refine_mcp::prompts::build_red_team_prompts_with_schema(
                 mode,
                 &plan_content,
                 &fact_tables,
                 &ids,
                 &schema_section,
-            )
+            );
+            (prompts, None)
         } else {
             // Auto-select: pick relevant teams based on fact signals
-            let teams = refine_mcp::prompts::auto_select_red_teams(&fact_tables);
-            refine_mcp::prompts::build_red_team_prompts_with_schema(
+            let dispatch = refine_mcp::prompts::auto_select_red_teams(&fact_tables);
+            let prompts = refine_mcp::prompts::build_red_team_prompts_with_schema(
                 mode,
                 &plan_content,
                 &fact_tables,
-                &teams,
+                &dispatch.teams,
                 &schema_section,
-            )
+            );
+            (prompts, Some(dispatch))
         };
 
         let team_ids: Vec<String> = prompts.iter().map(|p| format!("{:?}", p.id)).collect();
+
+        // Include dispatch reasoning when auto-selected
+        let dispatch_info = if let Some(dispatch) = auto_dispatch {
+            serde_json::json!({
+                "activated": team_ids,
+                "reasoning": dispatch.reasoning,
+            })
+        } else {
+            serde_json::json!(null)
+        };
+
         let output = serde_json::json!({
             "prompts": prompts,
             "mode": format!("{mode:?}"),
             "red_count": prompts.len(),
             "teams": team_ids,
             "auto_selected": params.0.red_count.is_none(),
+            "dispatch": dispatch_info,
         });
 
         Ok(CallToolResult::success(vec![Content::text(
