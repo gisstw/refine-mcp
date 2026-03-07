@@ -2,9 +2,9 @@
 
 # refine-mcp
 
-**基於事實的紅藍對抗計畫精煉工具（MCP Server）**
+**別讓 AI 讀 code 猜漏洞 — 讓它推理結構化事實。**
 
-用 tree-sitter 從程式碼中提取結構化事實，讓 LLM 紅隊在事實基礎上找漏洞，再由藍隊交叉分析、過濾假陽性。全程透過 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 編排。
+tree-sitter 從程式碼提取事實（交易、鎖、mutation、例外處理），LLM 紅隊只負責推理這些事實找漏洞，藍隊交叉分析過濾假陽性。全程透過 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 編排。
 
 ## 核心概念
 
