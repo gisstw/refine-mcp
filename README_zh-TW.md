@@ -1,3 +1,5 @@
+[English](README.md) | 繁體中文
+
 # refine-mcp
 
 **基於事實的紅藍對抗計畫精煉工具（MCP Server）**
