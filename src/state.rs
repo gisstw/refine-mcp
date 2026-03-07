@@ -110,27 +110,30 @@ impl RefineState {
 
 /// Derive state file path from plan path.
 ///
-/// Given `.claude/plans/my-plan.md`, state goes to `.claude/refine-state.json`.
+/// Each plan gets its own state file to prevent cross-contamination.
+/// Given `.claude/plans/my-plan.md`, state goes to `.claude/refine-state/my-plan.json`.
 fn state_path_from_plan(plan_path: &Path) -> PathBuf {
     let dir = plan_path.parent().unwrap_or(Path::new("."));
+    let stem = plan_path
+        .file_stem()
+        .unwrap_or(std::ffi::OsStr::new("default"));
 
     // Check specifically for `.claude/plans/` — both components must match
-    // to avoid misidentifying arbitrary directories named `plans`.
     if dir.ends_with("plans") {
         if let Some(parent) = dir.parent() {
             if parent.ends_with(".claude") {
-                return parent.join("refine-state.json");
+                return parent.join("refine-state").join(stem).with_extension("json");
             }
         }
     }
 
     // If we're directly in .claude/, use it
     if dir.ends_with(".claude") {
-        return dir.join("refine-state.json");
+        return dir.join("refine-state").join(stem).with_extension("json");
     }
 
-    // Anchor to plan file's parent directory (not CWD which may vary)
-    dir.join("refine-state.json")
+    // Anchor to plan file's parent directory
+    dir.join(format!("refine-state-{}.json", stem.to_string_lossy()))
 }
 
 #[cfg(test)]
@@ -261,13 +264,21 @@ mod tests {
     #[test]
     fn state_path_from_plan_in_claude_plans() {
         let path = state_path_from_plan(Path::new(".claude/plans/my-plan.md"));
-        assert_eq!(path, PathBuf::from(".claude/refine-state.json"));
+        assert_eq!(path, PathBuf::from(".claude/refine-state/my-plan.json"));
+    }
+
+    #[test]
+    fn state_path_from_plan_different_plans_get_different_state() {
+        let path_a = state_path_from_plan(Path::new(".claude/plans/plan-a.md"));
+        let path_b = state_path_from_plan(Path::new(".claude/plans/plan-b.md"));
+        assert_ne!(path_a, path_b);
+        assert_eq!(path_a, PathBuf::from(".claude/refine-state/plan-a.json"));
+        assert_eq!(path_b, PathBuf::from(".claude/refine-state/plan-b.json"));
     }
 
     #[test]
     fn state_path_from_plan_in_arbitrary_dir() {
-        // When plan is not inside .claude/, state goes next to the plan
         let path = state_path_from_plan(Path::new("/tmp/my-project/plan.md"));
-        assert_eq!(path, PathBuf::from("/tmp/my-project/refine-state.json"));
+        assert_eq!(path, PathBuf::from("/tmp/my-project/refine-state-plan.json"));
     }
 }
