@@ -15,7 +15,7 @@ static RE_SOURCE_HEADER: LazyLock<Regex> =
 static RE_SEVERITY_HEADER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^###\s+(FATAL|HIGH)").expect("valid regex"));
 
-/// Matches finding headers in multiple LLM output formats:
+/// Matches finding headers WITH file path in multiple LLM output formats:
 ///
 /// - Standard:         `1. **title** (file.rs:123-456)`
 /// - Backtick-wrapped: 1. **title** (`` `file.rs:137` ``)
@@ -28,6 +28,15 @@ static RE_FINDING_HEADER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\d+\.\s+\*\*(.+?)\*\*\s+\(`?([^:,`)\s]+)(?::L?(\d+)(?:-L?(\d+))?)?")
         .expect("valid regex")
 });
+
+/// Matches finding headers WITHOUT file path (plan-level findings):
+///
+/// - `1. **title**`
+/// - `1. **title** — description after em-dash`
+///
+/// Captures: (1)=title
+static RE_FINDING_HEADER_NO_FILE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d+\.\s+\*\*(.+?)\*\*\s*$").expect("valid regex"));
 
 /// Matches `   - 問題：...` or `   - Problem: ...`
 static RE_PROBLEM: LazyLock<Regex> =
@@ -88,7 +97,7 @@ pub fn parse_red_team_output(md: &str) -> anyhow::Result<Vec<Finding>> {
             continue;
         }
 
-        // Check for finding header: 1. **title** (path:line-line)
+        // Check for finding header: 1. **title** (path:line-line) or 1. **title**
         if let Some(caps) = RE_FINDING_HEADER.captures(line) {
             flush_pending(&mut pending, &mut findings, &mut counter);
 
@@ -108,6 +117,25 @@ pub fn parse_red_team_output(md: &str) -> anyhow::Result<Vec<Finding>> {
                 title,
                 file_path,
                 line_range,
+                problem: None,
+                attack_scenario: None,
+                suggested_fix: None,
+            });
+            continue;
+        }
+
+        // Fallback: finding header without file path (plan-level findings)
+        if let Some(caps) = RE_FINDING_HEADER_NO_FILE.captures(line) {
+            flush_pending(&mut pending, &mut findings, &mut counter);
+
+            let title = caps[1].to_string();
+
+            pending = Some(PartialFinding {
+                source: current_source,
+                severity: current_severity,
+                title,
+                file_path: PathBuf::from("(plan-level)"),
+                line_range: None,
                 problem: None,
                 attack_scenario: None,
                 suggested_fix: None,
@@ -176,4 +204,142 @@ fn flush_pending(
     finding.suggested_fix = pf.suggested_fix;
 
     findings.push(finding);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_code_level_findings_with_file_path() {
+        let md = "\
+## [RT-A] Single-Op Analysis
+
+### FATAL
+
+1. **SQL Injection in search** (app/Controllers/SearchController.php:45-60)
+   - Problem: User input interpolated into raw SQL
+   - Attack scenario: Attacker drops database via search field
+   - Suggested fix: Use parameterized queries
+
+### HIGH
+
+1. **Missing null check** (app/Services/PaymentService.php:120)
+   - Problem: Config value used without fallback
+   - Attack scenario: App crashes when config key is unset
+";
+        let findings = parse_red_team_output(md).unwrap();
+        assert_eq!(findings.len(), 2);
+
+        assert_eq!(findings[0].title, "SQL Injection in search");
+        assert_eq!(
+            findings[0].file_path,
+            PathBuf::from("app/Controllers/SearchController.php")
+        );
+        assert_eq!(findings[0].line_range, Some((45, 60)));
+        assert_eq!(findings[0].severity, Severity::Fatal);
+        assert_eq!(findings[0].sources, vec![RedTeamId::RtA]);
+        assert!(findings[0].problem.contains("raw SQL"));
+
+        assert_eq!(findings[1].title, "Missing null check");
+        assert_eq!(findings[1].line_range, Some((120, 120)));
+        assert_eq!(findings[1].severity, Severity::High);
+    }
+
+    #[test]
+    fn parses_plan_level_findings_without_file_path() {
+        let md = "\
+## [RT-A] Silent Failure + Type Safety
+
+### FATAL
+
+1. **Embedding Model Drift Creates Invisible RAG Corruption**
+   - Problem: ChromaDB stores vectors with no metadata about which embedding model produced them
+   - Attack scenario: Model weights change silently, cosine similarity returns meaningless results
+
+2. **No Ingestion Idempotency**
+   - Problem: Running ingestion twice doubles vector weight
+   - Suggested fix: Use content hash as deterministic ID
+
+### HIGH
+
+1. **Big5 Encoding Emails Produce Garbage Chunks**
+   - Problem: Taiwanese email contains Big5-encoded content
+   - Attack scenario: Lossy UTF-8 conversion produces garbage embeddings
+";
+        let findings = parse_red_team_output(md).unwrap();
+        assert_eq!(
+            findings.len(),
+            3,
+            "should parse all 3 findings: {findings:?}"
+        );
+
+        // All plan-level findings get the default path
+        for f in &findings {
+            assert_eq!(f.file_path, PathBuf::from("(plan-level)"));
+            assert_eq!(f.line_range, None);
+        }
+
+        assert_eq!(findings[0].severity, Severity::Fatal);
+        assert_eq!(
+            findings[0].title,
+            "Embedding Model Drift Creates Invisible RAG Corruption"
+        );
+        assert!(findings[0].problem.contains("ChromaDB"));
+        assert!(findings[0].attack_scenario.contains("cosine similarity"));
+
+        assert_eq!(findings[1].title, "No Ingestion Idempotency");
+        assert!(findings[1].suggested_fix.is_some());
+
+        assert_eq!(findings[2].severity, Severity::High);
+    }
+
+    #[test]
+    fn mixed_code_and_plan_findings() {
+        let md = "\
+## [RT-B] Concurrency Analysis
+
+### FATAL
+
+1. **Rate Limit Cascade** (src/server.rs:30-50)
+   - Problem: No backpressure on API calls
+
+2. **SSE Stream Orphaning**
+   - Problem: SSE connections drop on restart with no graceful degradation
+   - Attack scenario: Thundering herd on reconnect
+";
+        let findings = parse_red_team_output(md).unwrap();
+        assert_eq!(findings.len(), 2);
+
+        // First: code-level with file path
+        assert_eq!(findings[0].file_path, PathBuf::from("src/server.rs"));
+        assert_eq!(findings[0].line_range, Some((30, 50)));
+
+        // Second: plan-level without file path
+        assert_eq!(findings[1].file_path, PathBuf::from("(plan-level)"));
+        assert_eq!(findings[1].line_range, None);
+        assert!(findings[1].attack_scenario.contains("Thundering herd"));
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        let findings = parse_red_team_output("").unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn skips_findings_without_problem_or_attack() {
+        let md = "\
+## [RT-A] Analysis
+
+### HIGH
+
+1. **Title Only No Details**
+";
+        let findings = parse_red_team_output(md).unwrap();
+        assert!(
+            findings.is_empty(),
+            "should skip findings without problem or attack_scenario"
+        );
+    }
 }
