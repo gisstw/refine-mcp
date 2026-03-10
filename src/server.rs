@@ -502,6 +502,86 @@ impl RefineServer {
                 ));
             };
 
+        // ── Function-level filtering (v5.1) ──────────────────────
+        // Only keep functions relevant to the plan to reduce prompt noise.
+        let plan_mentioned = extract_plan_functions(&plan_content);
+        let original_fn_count: usize = fact_tables.iter().map(|t| t.functions.len()).sum();
+
+        let (fact_tables, filter_stats) = if plan_mentioned.is_empty() || original_fn_count == 0 {
+            // No function names extracted or no functions — skip filtering
+            (fact_tables, None)
+        } else {
+            // Collect callees of plan-mentioned functions (from external_calls.target)
+            let plan_callees: std::collections::HashSet<String> = fact_tables
+                .iter()
+                .flat_map(|t| t.functions.iter())
+                .filter(|f| plan_mentioned.contains(&f.name))
+                .flat_map(|f| f.external_calls.iter())
+                .filter_map(|ec| {
+                    // target looks like "$this->fooService->barMethod" or "SomeClass::method"
+                    let name = ec
+                        .target
+                        .rsplit("::")
+                        .next()
+                        .or_else(|| ec.target.rsplit("->").next())
+                        .unwrap_or(&ec.target);
+                    let clean = name.trim_end_matches('(').trim();
+                    if clean.len() >= 3 {
+                        Some(clean.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Mutation targets from plan-mentioned + callee functions
+            let relevant_fns: std::collections::HashSet<&str> = plan_mentioned
+                .iter()
+                .chain(plan_callees.iter())
+                .map(|s| s.as_str())
+                .collect();
+
+            let plan_mutation_targets: std::collections::HashSet<String> = fact_tables
+                .iter()
+                .flat_map(|t| t.functions.iter())
+                .filter(|f| relevant_fns.contains(f.name.as_str()))
+                .flat_map(|f| f.state_mutations.iter())
+                .map(|m| m.target.to_lowercase())
+                .collect();
+
+            // Filter
+            let filtered: Vec<FactTable> = fact_tables
+                .into_iter()
+                .map(|mut t| {
+                    t.functions.retain(|f| {
+                        plan_mentioned.contains(&f.name)
+                            || plan_callees.contains(&f.name)
+                            || t.callers.iter().any(|c| c.symbol == f.name)
+                            || f.state_mutations.iter().any(|m| {
+                                plan_mutation_targets.contains(&m.target.to_lowercase())
+                            })
+                    });
+                    t
+                })
+                .collect();
+
+            let filtered_fn_count: usize = filtered.iter().map(|t| t.functions.len()).sum();
+
+            let stats = serde_json::json!({
+                "original_function_count": original_fn_count,
+                "filtered_function_count": filtered_fn_count,
+                "plan_mentioned": plan_mentioned.iter().take(20).collect::<Vec<_>>(),
+                "plan_callees_found": plan_callees.len(),
+                "shared_mutation_targets": plan_mutation_targets.iter().take(10).collect::<Vec<_>>(),
+                "reduction_percent": if original_fn_count > 0 {
+                    100 - (filtered_fn_count * 100 / original_fn_count)
+                } else { 0 },
+                "aggressive_warning": original_fn_count > 0 && filtered_fn_count * 5 < original_fn_count,
+            });
+
+            (filtered, Some(stats))
+        };
+
         // Build schema section for prompt injection
         let schema_section = if let Some(ref schema_str) = params.0.schema_json {
             match serde_json::from_str::<refine_mcp::facts::types::SchemaSnapshot>(schema_str) {
@@ -586,7 +666,7 @@ impl RefineServer {
             serde_json::json!(null)
         };
 
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "prompts": prompts,
             "mode": format!("{mode:?}"),
             "red_count": prompts.len(),
@@ -594,6 +674,9 @@ impl RefineServer {
             "auto_selected": params.0.red_count.is_none(),
             "dispatch": dispatch_info,
         });
+        if let Some(stats) = filter_stats {
+            output["filtering"] = stats;
+        }
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&output).unwrap_or_default(),
@@ -980,6 +1063,63 @@ fn parse_mode(mode_str: Option<&str>) -> Result<RefineMode, rmcp::ErrorData> {
     }
 }
 
+/// Extract function/method names mentioned in plan content.
+///
+/// Uses multiple regex patterns to catch different reference styles:
+/// backtick-wrapped, method calls (->method, ::method), and bare function().
+/// Skips language keywords but NOT method names like create/update/save.
+fn extract_plan_functions(plan_content: &str) -> std::collections::HashSet<String> {
+    use regex::Regex;
+    use std::sync::LazyLock;
+
+    // Pattern 1: backtick-wrapped identifiers: `processBooking`
+    static RE_BACKTICK: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"`(\w{3,})`").expect("valid regex"));
+
+    // Pattern 2: method calls: ->processBooking( or ::processBooking(
+    static RE_METHOD: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?:->|::)(\w{3,})\s*\(").expect("valid regex"));
+
+    // Pattern 3: function references with parens: processBooking(
+    static RE_FUNC_CALL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\b([a-zA-Z_]\w{2,})\s*\(").expect("valid regex"));
+
+    let blocklist: std::collections::HashSet<&str> = [
+        // English prose words
+        "the", "and", "for", "with", "from", "this", "that", "will", "are", "not",
+        "use", "has", "can", "may", "let", "but", "all", "also", "each", "when",
+        "then", "than", "into", "only", "some", "such", "like", "need", "must",
+        "should", "would", "could", "been", "have", "does", "make", "take",
+        // Language keywords
+        "pub", "mod", "mut", "ref", "self", "super", "const",
+        "step", "plan", "file", "code", "line", "note", "todo", "see",
+        "true", "false", "null", "none", "void",
+        "return", "class", "function", "method", "trait", "struct", "impl", "enum",
+        "public", "private", "protected", "static", "async", "await", "abstract",
+        "interface", "extends", "implements", "namespace", "require", "include",
+        // Type names (not method names)
+        "string", "array", "bool", "int", "float", "mixed", "object",
+        "varchar", "integer", "boolean", "nullable", "default", "index",
+        "Table", "Model", "Service", "Controller", "Migration", "Seeder",
+        // Plan structure words
+        "Problem", "Goal", "Risk", "Impact", "Before", "After", "Expected",
+        "Metric", "Testing", "Files", "Modify",
+    ]
+    .into_iter()
+    .collect();
+
+    let mut names = std::collections::HashSet::new();
+    for re in [&*RE_BACKTICK, &*RE_METHOD, &*RE_FUNC_CALL] {
+        for cap in re.captures_iter(plan_content) {
+            let name = &cap[1];
+            if !blocklist.contains(name) {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names
+}
+
 /// Extract file paths referenced in a plan markdown document.
 fn extract_file_references(content: &str) -> Vec<String> {
     use regex::Regex;
@@ -1294,5 +1434,53 @@ mod tests {
 
         assert!(out.contains("app/Services/Svc.php:42)"));
         assert!(!out.contains("42-42"));
+    }
+
+    // ── extract_plan_functions ──
+
+    #[test]
+    fn extract_plan_functions_backtick() {
+        let plan = "Modify `processBooking` to handle cancellations. Also update `applyBookingMetadata`.";
+        let fns = extract_plan_functions(plan);
+        assert!(fns.contains("processBooking"));
+        assert!(fns.contains("applyBookingMetadata"));
+    }
+
+    #[test]
+    fn extract_plan_functions_method_call() {
+        let plan = "Call $this->reservationService->createWalkinReservation() and Beds24Service::syncAvailability()";
+        let fns = extract_plan_functions(plan);
+        assert!(fns.contains("createWalkinReservation"));
+        assert!(fns.contains("syncAvailability"));
+    }
+
+    #[test]
+    fn extract_plan_functions_skips_keywords() {
+        let plan = "Use the `function` keyword to `return` a `string` value. Call `processBooking()`.";
+        let fns = extract_plan_functions(plan);
+        assert!(!fns.contains("function"));
+        assert!(!fns.contains("return"));
+        assert!(!fns.contains("string"));
+        assert!(fns.contains("processBooking"));
+    }
+
+    #[test]
+    fn extract_plan_functions_keeps_crud_methods() {
+        let plan = "Call create() and update() and delete() and save() and find()";
+        let fns = extract_plan_functions(plan);
+        // These are valid method names in Laravel, should NOT be blocked
+        assert!(fns.contains("create"));
+        assert!(fns.contains("update"));
+        assert!(fns.contains("delete"));
+        assert!(fns.contains("save"));
+        assert!(fns.contains("find"));
+    }
+
+    #[test]
+    fn extract_plan_functions_empty_plan() {
+        let plan = "This plan has no function references at all.";
+        let fns = extract_plan_functions(plan);
+        // "plan" and "function" are blocklisted, "This" and "has" are < 3 chars or blocklisted
+        assert!(fns.is_empty() || fns.iter().all(|f| f.len() >= 3));
     }
 }
