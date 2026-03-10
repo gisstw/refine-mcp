@@ -143,36 +143,7 @@ impl RefineServer {
             .unwrap_or_else(|| ".claude/plans".to_string());
         let dir_path = validate_dir(&dir)?;
 
-        // Find the most recently modified .md file
-        let mut latest: Option<(PathBuf, std::time::SystemTime)> = None;
-        let entries = std::fs::read_dir(&dir_path).map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Failed to read directory: {e}"), None)
-        })?;
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "md") {
-                if let Ok(meta) = path.metadata() {
-                    if let Ok(modified) = meta.modified() {
-                        if latest.as_ref().is_none_or(|(_, t)| modified > *t) {
-                            latest = Some((path, modified));
-                        }
-                    }
-                }
-            }
-        }
-
-        let Some((plan_path, _)) = latest else {
-            return Err(rmcp::ErrorData::invalid_params(
-                format!("No .md files found in {dir}"),
-                None,
-            ));
-        };
-
-        // Read plan and extract referenced file paths
-        let plan_content = std::fs::read_to_string(&plan_path).map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Failed to read plan: {e}"), None)
-        })?;
+        let (plan_path, plan_content) = discover_latest_plan(&dir_path)?;
         let file_refs = extract_file_references(&plan_content);
 
         let result = serde_json::json!({
@@ -203,99 +174,9 @@ impl RefineServer {
         let diff_only = params.0.diff_only.unwrap_or(false);
         let dir_path = validate_dir(&dir)?;
 
-        // ── Step 1: discover plan (same logic as discover_plan) ──
-        let mut latest: Option<(PathBuf, std::time::SystemTime)> = None;
-        let entries = std::fs::read_dir(&dir_path).map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Failed to read directory: {e}"), None)
-        })?;
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "md") {
-                if let Ok(meta) = path.metadata() {
-                    if let Ok(modified) = meta.modified() {
-                        if latest.as_ref().is_none_or(|(_, t)| modified > *t) {
-                            latest = Some((path, modified));
-                        }
-                    }
-                }
-            }
-        }
-
-        let Some((plan_path, _)) = latest else {
-            return Err(rmcp::ErrorData::invalid_params(
-                format!("No .md files found in {dir}"),
-                None,
-            ));
-        };
-
-        let plan_content = std::fs::read_to_string(&plan_path).map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Failed to read plan: {e}"), None)
-        })?;
-        let mut file_refs = extract_file_references(&plan_content);
-
-        // ── Step 1b: if diff_only, intersect with git changed files ──
-        if diff_only {
-            let changed = git_changed_files();
-            if !changed.is_empty() {
-                file_refs.retain(|f| {
-                    let fp = Path::new(f);
-                    changed
-                        .iter()
-                        .any(|c| fp.ends_with(c) || Path::new(c).ends_with(f))
-                });
-            }
-        }
-
-        // ── Step 2: extract facts from referenced files ──
-        let mut tables = Vec::new();
-        let mut errors = Vec::new();
-
-        for file_path_str in &file_refs {
-            let path = PathBuf::from(file_path_str);
-            if !path.exists() {
-                errors.push(format!("File not found: {file_path_str}"));
-                continue;
-            }
-            let source = match std::fs::read_to_string(&path) {
-                Ok(s) => s,
-                Err(e) => {
-                    errors.push(format!("Failed to read {file_path_str}: {e}"));
-                    continue;
-                }
-            };
-            let result = match path.extension().and_then(|e| e.to_str()) {
-                Some("php") => refine_mcp::facts::php::extract_php_facts(&path, &source),
-                Some("rs") => refine_mcp::facts::rust_lang::extract_rust_facts(&path, &source),
-                Some("ts" | "tsx" | "js" | "jsx") => {
-                    refine_mcp::facts::typescript::extract_ts_facts(&path, &source)
-                }
-                Some("py") => refine_mcp::facts::python::extract_python_facts(&path, &source),
-                Some(ext) => {
-                    errors.push(format!("Unsupported language: .{ext} ({file_path_str})"));
-                    continue;
-                }
-                None => {
-                    errors.push(format!("No file extension: {file_path_str}"));
-                    continue;
-                }
-            };
-            match result {
-                Ok(table) => tables.push(table),
-                Err(e) => errors.push(format!("Parse error for {file_path_str}: {e}")),
-            }
-        }
-
-        if tables.is_empty() && !errors.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
-                format!(
-                    "All {} referenced files failed extraction: {}",
-                    errors.len(),
-                    errors.join("; ")
-                ),
-                None,
-            ));
-        }
+        let (plan_path, plan_content) = discover_latest_plan(&dir_path)?;
+        let file_refs = extract_file_references(&plan_content);
+        let (tables, errors) = run_extraction(&file_refs, diff_only)?;
 
         let output = serde_json::json!({
             "plan_path": plan_path.to_string_lossy(),
@@ -325,78 +206,11 @@ impl RefineServer {
         params: Parameters<ExtractFactsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let diff_only = params.0.diff_only.unwrap_or(false);
-        let mut file_paths = Vec::with_capacity(params.0.file_paths.len());
         for fp in &params.0.file_paths {
             validate_path(fp)?;
-            file_paths.push(fp.clone());
         }
 
-        // Filter to git-changed files if requested
-        if diff_only {
-            let changed = git_changed_files();
-            if !changed.is_empty() {
-                file_paths.retain(|f| {
-                    let fp = Path::new(f);
-                    changed
-                        .iter()
-                        .any(|c| fp.ends_with(c) || Path::new(c).ends_with(f))
-                });
-            }
-        }
-
-        let mut tables = Vec::new();
-        let mut errors = Vec::new();
-
-        for file_path_str in &file_paths {
-            let path = PathBuf::from(file_path_str);
-
-            if !path.exists() {
-                errors.push(format!("File not found: {file_path_str}"));
-                continue;
-            }
-
-            let source = match std::fs::read_to_string(&path) {
-                Ok(s) => s,
-                Err(e) => {
-                    errors.push(format!("Failed to read {file_path_str}: {e}"));
-                    continue;
-                }
-            };
-
-            let result = match path.extension().and_then(|e| e.to_str()) {
-                Some("php") => refine_mcp::facts::php::extract_php_facts(&path, &source),
-                Some("rs") => refine_mcp::facts::rust_lang::extract_rust_facts(&path, &source),
-                Some("ts" | "tsx" | "js" | "jsx") => {
-                    refine_mcp::facts::typescript::extract_ts_facts(&path, &source)
-                }
-                Some("py") => refine_mcp::facts::python::extract_python_facts(&path, &source),
-                Some(ext) => {
-                    errors.push(format!("Unsupported language: .{ext} ({file_path_str})"));
-                    continue;
-                }
-                None => {
-                    errors.push(format!("No file extension: {file_path_str}"));
-                    continue;
-                }
-            };
-
-            match result {
-                Ok(table) => tables.push(table),
-                Err(e) => errors.push(format!("Parse error for {file_path_str}: {e}")),
-            }
-        }
-
-        // Step 2.3: Return error if ALL files failed extraction
-        if tables.is_empty() && !errors.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
-                format!(
-                    "All {} files failed extraction: {}",
-                    errors.len(),
-                    errors.join("; ")
-                ),
-                None,
-            ));
-        }
+        let (tables, errors) = run_extraction(&params.0.file_paths, diff_only)?;
 
         let output = serde_json::json!({
             "fact_tables": tables,
@@ -538,7 +352,7 @@ impl RefineServer {
             let relevant_fns: std::collections::HashSet<&str> = plan_mentioned
                 .iter()
                 .chain(plan_callees.iter())
-                .map(|s| s.as_str())
+                .map(std::string::String::as_str)
                 .collect();
 
             let plan_mutation_targets: std::collections::HashSet<String> = fact_tables
@@ -1066,7 +880,7 @@ fn parse_mode(mode_str: Option<&str>) -> Result<RefineMode, rmcp::ErrorData> {
 /// Extract function/method names mentioned in plan content.
 ///
 /// Uses multiple regex patterns to catch different reference styles:
-/// backtick-wrapped, method calls (->method, ::method), and bare function().
+/// backtick-wrapped, method calls (->method, `::method`), and bare `function()`.
 /// Skips language keywords but NOT method names like create/update/save.
 fn extract_plan_functions(plan_content: &str) -> std::collections::HashSet<String> {
     use regex::Regex;
@@ -1236,6 +1050,120 @@ fn write_finding(out: &mut String, f: &refine_mcp::types::Finding, idx: usize) {
     if let Some(fix) = &f.suggested_fix {
         writeln!(out, "   - 建議修復：{fix}").ok();
     }
+}
+
+/// Find the most recently modified `.md` file in a directory and read its content.
+///
+/// Returns `(plan_path, plan_content)` or an MCP error if no `.md` files exist.
+fn discover_latest_plan(dir: &Path) -> Result<(PathBuf, String), rmcp::ErrorData> {
+    let mut latest: Option<(PathBuf, std::time::SystemTime)> = None;
+    let entries = std::fs::read_dir(dir).map_err(|e| {
+        rmcp::ErrorData::internal_error(format!("Failed to read directory: {e}"), None)
+    })?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "md") {
+            if let Ok(meta) = path.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    if latest.as_ref().is_none_or(|(_, t)| modified > *t) {
+                        latest = Some((path, modified));
+                    }
+                }
+            }
+        }
+    }
+
+    let Some((plan_path, _)) = latest else {
+        return Err(rmcp::ErrorData::invalid_params(
+            format!("No .md files found in {}", dir.display()),
+            None,
+        ));
+    };
+
+    let plan_content = std::fs::read_to_string(&plan_path).map_err(|e| {
+        rmcp::ErrorData::internal_error(format!("Failed to read plan: {e}"), None)
+    })?;
+
+    Ok((plan_path, plan_content))
+}
+
+/// Run tree-sitter fact extraction on a list of file paths.
+///
+/// Optionally filters to git-changed files when `diff_only` is true.
+/// Returns `(fact_tables, errors)`. Returns an MCP error only if ALL files fail.
+fn run_extraction(
+    file_paths: &[String],
+    diff_only: bool,
+) -> Result<(Vec<FactTable>, Vec<String>), rmcp::ErrorData> {
+    let mut paths: Vec<String> = file_paths.to_vec();
+
+    if diff_only {
+        let changed = git_changed_files();
+        if !changed.is_empty() {
+            paths.retain(|f| {
+                let fp = Path::new(f);
+                changed
+                    .iter()
+                    .any(|c| fp.ends_with(c) || Path::new(c).ends_with(f))
+            });
+        }
+    }
+
+    let mut tables = Vec::new();
+    let mut errors = Vec::new();
+
+    for file_path_str in &paths {
+        let path = PathBuf::from(file_path_str);
+
+        if !path.exists() {
+            errors.push(format!("File not found: {file_path_str}"));
+            continue;
+        }
+
+        let source = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                errors.push(format!("Failed to read {file_path_str}: {e}"));
+                continue;
+            }
+        };
+
+        let result = match path.extension().and_then(|e| e.to_str()) {
+            Some("php") => refine_mcp::facts::php::extract_php_facts(&path, &source),
+            Some("rs") => refine_mcp::facts::rust_lang::extract_rust_facts(&path, &source),
+            Some("ts" | "tsx" | "js" | "jsx") => {
+                refine_mcp::facts::typescript::extract_ts_facts(&path, &source)
+            }
+            Some("py") => refine_mcp::facts::python::extract_python_facts(&path, &source),
+            Some(ext) => {
+                errors.push(format!("Unsupported language: .{ext} ({file_path_str})"));
+                continue;
+            }
+            None => {
+                errors.push(format!("No file extension: {file_path_str}"));
+                continue;
+            }
+        };
+
+        match result {
+            Ok(table) => tables.push(table),
+            Err(e) => errors.push(format!("Parse error for {file_path_str}: {e}")),
+        }
+    }
+
+    if tables.is_empty() && !errors.is_empty() {
+        return Err(rmcp::ErrorData::invalid_params(
+            format!(
+                "All {} files failed extraction: {}",
+                errors.len(),
+                errors.join("; ")
+            ),
+            None,
+        ));
+    }
+
+    Ok((tables, errors))
 }
 
 /// Get files changed relative to HEAD via `git diff`.
