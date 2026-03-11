@@ -877,6 +877,33 @@ fn parse_mode(mode_str: Option<&str>) -> Result<RefineMode, rmcp::ErrorData> {
     }
 }
 
+/// Words to ignore when extracting function names from plan text.
+/// Includes English prose, language keywords, type names, and plan structure words.
+/// CRUD-style method names (create, update, save, delete, etc.) are intentionally
+/// kept OUT of this list so they get extracted as potential function references.
+#[rustfmt::skip]
+static PLAN_FUNC_BLOCKLIST: &[&str] = &[
+    // English prose words
+    "the", "and", "for", "with", "from", "this", "that", "will", "are", "not",
+    "use", "has", "can", "may", "let", "but", "all", "also", "each", "when",
+    "then", "than", "into", "only", "some", "such", "like", "need", "must",
+    "should", "would", "could", "been", "have", "does", "make", "take",
+    // Language keywords
+    "pub", "mod", "mut", "ref", "self", "super", "const",
+    "step", "plan", "file", "code", "line", "note", "todo", "see",
+    "true", "false", "null", "none", "void",
+    "return", "class", "function", "method", "trait", "struct", "impl", "enum",
+    "public", "private", "protected", "static", "async", "await", "abstract",
+    "interface", "extends", "implements", "namespace", "require", "include",
+    // Type names (not method names)
+    "string", "array", "bool", "int", "float", "mixed", "object",
+    "varchar", "integer", "boolean", "nullable", "default", "index",
+    "Table", "Model", "Service", "Controller", "Migration", "Seeder",
+    // Plan structure words
+    "Problem", "Goal", "Risk", "Impact", "Before", "After", "Expected",
+    "Metric", "Testing", "Files", "Modify",
+];
+
 /// Extract function/method names mentioned in plan content.
 ///
 /// Uses multiple regex patterns to catch different reference styles:
@@ -898,122 +925,7 @@ fn extract_plan_functions(plan_content: &str) -> std::collections::HashSet<Strin
     static RE_FUNC_CALL: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"\b([a-zA-Z_]\w{2,})\s*\(").expect("valid regex"));
 
-    let blocklist: std::collections::HashSet<&str> = [
-        // English prose words
-        "the",
-        "and",
-        "for",
-        "with",
-        "from",
-        "this",
-        "that",
-        "will",
-        "are",
-        "not",
-        "use",
-        "has",
-        "can",
-        "may",
-        "let",
-        "but",
-        "all",
-        "also",
-        "each",
-        "when",
-        "then",
-        "than",
-        "into",
-        "only",
-        "some",
-        "such",
-        "like",
-        "need",
-        "must",
-        "should",
-        "would",
-        "could",
-        "been",
-        "have",
-        "does",
-        "make",
-        "take",
-        // Language keywords
-        "pub",
-        "mod",
-        "mut",
-        "ref",
-        "self",
-        "super",
-        "const",
-        "step",
-        "plan",
-        "file",
-        "code",
-        "line",
-        "note",
-        "todo",
-        "see",
-        "true",
-        "false",
-        "null",
-        "none",
-        "void",
-        "return",
-        "class",
-        "function",
-        "method",
-        "trait",
-        "struct",
-        "impl",
-        "enum",
-        "public",
-        "private",
-        "protected",
-        "static",
-        "async",
-        "await",
-        "abstract",
-        "interface",
-        "extends",
-        "implements",
-        "namespace",
-        "require",
-        "include",
-        // Type names (not method names)
-        "string",
-        "array",
-        "bool",
-        "int",
-        "float",
-        "mixed",
-        "object",
-        "varchar",
-        "integer",
-        "boolean",
-        "nullable",
-        "default",
-        "index",
-        "Table",
-        "Model",
-        "Service",
-        "Controller",
-        "Migration",
-        "Seeder",
-        // Plan structure words
-        "Problem",
-        "Goal",
-        "Risk",
-        "Impact",
-        "Before",
-        "After",
-        "Expected",
-        "Metric",
-        "Testing",
-        "Files",
-        "Modify",
-    ]
-    .into_iter()
-    .collect();
+    let blocklist: std::collections::HashSet<&str> = PLAN_FUNC_BLOCKLIST.iter().copied().collect();
 
     let mut names = std::collections::HashSet::new();
     for re in [&*RE_BACKTICK, &*RE_METHOD, &*RE_FUNC_CALL] {
