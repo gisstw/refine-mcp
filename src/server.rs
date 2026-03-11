@@ -371,9 +371,9 @@ impl RefineServer {
                         plan_mentioned.contains(&f.name)
                             || plan_callees.contains(&f.name)
                             || t.callers.iter().any(|c| c.symbol == f.name)
-                            || f.state_mutations.iter().any(|m| {
-                                plan_mutation_targets.contains(&m.target.to_lowercase())
-                            })
+                            || f.state_mutations
+                                .iter()
+                                .any(|m| plan_mutation_targets.contains(&m.target.to_lowercase()))
                     });
                     t
                 })
@@ -900,24 +900,117 @@ fn extract_plan_functions(plan_content: &str) -> std::collections::HashSet<Strin
 
     let blocklist: std::collections::HashSet<&str> = [
         // English prose words
-        "the", "and", "for", "with", "from", "this", "that", "will", "are", "not",
-        "use", "has", "can", "may", "let", "but", "all", "also", "each", "when",
-        "then", "than", "into", "only", "some", "such", "like", "need", "must",
-        "should", "would", "could", "been", "have", "does", "make", "take",
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "this",
+        "that",
+        "will",
+        "are",
+        "not",
+        "use",
+        "has",
+        "can",
+        "may",
+        "let",
+        "but",
+        "all",
+        "also",
+        "each",
+        "when",
+        "then",
+        "than",
+        "into",
+        "only",
+        "some",
+        "such",
+        "like",
+        "need",
+        "must",
+        "should",
+        "would",
+        "could",
+        "been",
+        "have",
+        "does",
+        "make",
+        "take",
         // Language keywords
-        "pub", "mod", "mut", "ref", "self", "super", "const",
-        "step", "plan", "file", "code", "line", "note", "todo", "see",
-        "true", "false", "null", "none", "void",
-        "return", "class", "function", "method", "trait", "struct", "impl", "enum",
-        "public", "private", "protected", "static", "async", "await", "abstract",
-        "interface", "extends", "implements", "namespace", "require", "include",
+        "pub",
+        "mod",
+        "mut",
+        "ref",
+        "self",
+        "super",
+        "const",
+        "step",
+        "plan",
+        "file",
+        "code",
+        "line",
+        "note",
+        "todo",
+        "see",
+        "true",
+        "false",
+        "null",
+        "none",
+        "void",
+        "return",
+        "class",
+        "function",
+        "method",
+        "trait",
+        "struct",
+        "impl",
+        "enum",
+        "public",
+        "private",
+        "protected",
+        "static",
+        "async",
+        "await",
+        "abstract",
+        "interface",
+        "extends",
+        "implements",
+        "namespace",
+        "require",
+        "include",
         // Type names (not method names)
-        "string", "array", "bool", "int", "float", "mixed", "object",
-        "varchar", "integer", "boolean", "nullable", "default", "index",
-        "Table", "Model", "Service", "Controller", "Migration", "Seeder",
+        "string",
+        "array",
+        "bool",
+        "int",
+        "float",
+        "mixed",
+        "object",
+        "varchar",
+        "integer",
+        "boolean",
+        "nullable",
+        "default",
+        "index",
+        "Table",
+        "Model",
+        "Service",
+        "Controller",
+        "Migration",
+        "Seeder",
         // Plan structure words
-        "Problem", "Goal", "Risk", "Impact", "Before", "After", "Expected",
-        "Metric", "Testing", "Files", "Modify",
+        "Problem",
+        "Goal",
+        "Risk",
+        "Impact",
+        "Before",
+        "After",
+        "Expected",
+        "Metric",
+        "Testing",
+        "Files",
+        "Modify",
     ]
     .into_iter()
     .collect();
@@ -1081,9 +1174,8 @@ fn discover_latest_plan(dir: &Path) -> Result<(PathBuf, String), rmcp::ErrorData
         ));
     };
 
-    let plan_content = std::fs::read_to_string(&plan_path).map_err(|e| {
-        rmcp::ErrorData::internal_error(format!("Failed to read plan: {e}"), None)
-    })?;
+    let plan_content = std::fs::read_to_string(&plan_path)
+        .map_err(|e| rmcp::ErrorData::internal_error(format!("Failed to read plan: {e}"), None))?;
 
     Ok((plan_path, plan_content))
 }
@@ -1368,7 +1460,8 @@ mod tests {
 
     #[test]
     fn extract_plan_functions_backtick() {
-        let plan = "Modify `processBooking` to handle cancellations. Also update `applyBookingMetadata`.";
+        let plan =
+            "Modify `processBooking` to handle cancellations. Also update `applyBookingMetadata`.";
         let fns = extract_plan_functions(plan);
         assert!(fns.contains("processBooking"));
         assert!(fns.contains("applyBookingMetadata"));
@@ -1384,7 +1477,8 @@ mod tests {
 
     #[test]
     fn extract_plan_functions_skips_keywords() {
-        let plan = "Use the `function` keyword to `return` a `string` value. Call `processBooking()`.";
+        let plan =
+            "Use the `function` keyword to `return` a `string` value. Call `processBooking()`.";
         let fns = extract_plan_functions(plan);
         assert!(!fns.contains("function"));
         assert!(!fns.contains("return"));
