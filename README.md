@@ -2,92 +2,43 @@ English | [繁體中文](README_zh-TW.md)
 
 # refine-mcp
 
-**Stop letting AI guess at bugs — make it reason over structured facts.**
+**Know exactly what you broke — before you commit.**
 
-Tree-sitter extracts facts from your code (transactions, locks, mutations, catch blocks). LLM red teams reason over those facts to find real vulnerabilities. A blue team cross-analyzes and filters false positives. All orchestrated through the [Model Context Protocol](https://modelcontextprotocol.io/).
+Tree-sitter extracts structural facts from your code (function signatures, parameters, return types). When you change code, refine-mcp compares before/after AST structures to detect breaking changes, find affected callers, and measure code health. All orchestrated through the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 ## How It Works
 
 ```
-Source Code                    LLM Red Teams (2-4)
-    │                               │
-    ▼                               ▼
-┌─────────────┐  fact tables  ┌───────────────┐  raw findings
-│ tree-sitter │──────────────▶│  RT-A  RT-B   │─────────────┐
-│  extractor  │               │  RT-C  RT-D   │             │
-└─────────────┘               └───────────────┘             │
-                                                            ▼
-Plan File ─────────────────────────────────────▶ ┌─────────────────┐
-                                                 │    Synthesize    │
-                                                 │ dedup + validate │
-                                                 │  + rank + score  │
-                                                 └────────┬────────┘
-                                                          │
-                                                          ▼
-                                                 ┌─────────────────┐
-                                                 │    Blue Team     │
-                                                 │ cross-analysis + │
-                                                 │  false positive  │
-                                                 └────────┬────────┘
-                                                          │
-                                                          ▼
-                                                   Final Report
+ Your Code Changes
+       │
+       ▼
+┌─────────────────┐     ┌──────────────────┐
+│   tree-sitter   │────▶│  structural_diff  │──▶ Breaking changes
+│   (4 languages) │     │  (before/after)   │    (signature changes,
+└─────────────────┘     └──────────────────┘     added/removed funcs)
+       │
+       ├──────────────▶ ┌──────────────────┐
+       │                │ impact_analysis   │──▶ Affected callers
+       │                │ (blast radius)    │    (who calls what you changed)
+       │                └──────────────────┘
+       │
+       └──────────────▶ ┌──────────────────┐
+                        │ health_snapshot   │──▶ Complexity metrics
+                        │ (per-function)    │    (nesting, branches, params)
+                        └──────────────────┘
 ```
 
-**Key insight**: LLMs are good at *reasoning* about code but expensive at *reading* it. Tree-sitter reads the code (free, 100% accurate), then LLMs only reason about the structured facts (small input, focused output). This cuts red team tokens by ~66% and blue team tokens by ~80%.
+**Key insight**: LLMs read code like humans — they can miss structural changes in large files. Tree-sitter parses the AST (free, 100% accurate) and catches every signature change, removed function, and added parameter that an LLM might overlook.
 
-## Why This Approach?
+## Why This Tool?
 
-Most AI code review tools (CodeRabbit, Sourcery, etc.) treat code as prose — feeding raw diffs to an LLM and hoping it spots issues. This leads to hallucinations, missed concurrency bugs, and wasted tokens.
-
-**refine-mcp takes a different path:**
-
-| Aspect | Traditional AI Review | refine-mcp |
-|--------|----------------------|------------|
-| Input to LLM | Raw code / diff (thousands of lines) | Structured fact tables (transactions, locks, mutations, catch blocks) |
-| Analysis basis | "Read and guess" | Grounded in AST-extracted facts |
-| Concurrency bugs | Usually missed (requires multi-step reasoning) | Dedicated RT-B team with lock/transaction facts |
-| False positives | High (no filtering) | Blue team cross-analysis + persistent state tracking |
-| Token cost | ~100% of code as input | ~34% (red team) / ~20% (blue team) |
-| Multi-round tracking | None | `.state.json` — fixed/false-positive findings don't recur |
-
-### Smart Red Team Dispatch
-
-Red teams aren't blindly thrown at code. Each team has a **specialized prompt template** focused on specific vulnerability classes, and teams are **dynamically activated based on fact signals**:
-
-```
-Facts extracted by tree-sitter
-    │
-    ├─ Mutations without transaction? ──────► Activate RT-C (data integrity)
-    ├─ External calls inside transaction? ──► Activate RT-C
-    ├─ Auth/permission in file paths? ──────► Activate RT-D (auth boundary)
-    └─ Always ──────────────────────────────► RT-A (single-op) + RT-B (multi-op)
-```
-
-This means zero LLM cost for the dispatch decision itself — tree-sitter facts drive the routing.
-
-When `red_count` is omitted, `prepare_attack` returns a `dispatch` field explaining **why** each team was activated or skipped:
-
-```json
-{
-  "dispatch": {
-    "activated": ["RtA", "RtB", "RtC"],
-    "reasoning": [
-      "RT-A (single-op): always active",
-      "RT-B (multi-op): always active",
-      "RT-C (data integrity): 3 mutations without transaction in PaymentService.php::transferFunds",
-      "RT-D (auth boundary): skipped (no signals)"
-    ]
-  }
-}
-```
-
-### Two Orthogonal Dimensions
-
-1. **Red team role** = *what to attack* (prompt template specialization)
-2. **Mode** = *how smart the model* (opus/sonnet/haiku)
-
-These are independent. You can run RT-A through RT-D with haiku for quick screening, or with opus for deep analysis.
+| Capability | LLM (1M context) | grep/ripgrep | refine-mcp |
+|-----------|------------------|-------------|------------|
+| Detect signature change | May miss in large files | Can't (text-level) | **100% accurate (AST)** |
+| Find all callers | May miss some | String match (false positives) | Grep + definition filtering |
+| Measure complexity | Estimates | Can't | **Precise tree-sitter metrics** |
+| Compare git refs | Must read both versions | Text diff only | **AST-level structural diff** |
+| Speed | Seconds (reads files) | Fast | **Instant (tree-sitter)** |
 
 ## Supported Languages
 
@@ -97,15 +48,6 @@ These are independent. You can run RT-A through RT-D with haiku for quick screen
 | Rust | `extract_rust_facts` | tree-sitter-rust 0.23 |
 | TypeScript/JavaScript | `extract_ts_facts` | tree-sitter-typescript 0.23 |
 | Python | `extract_python_facts` | tree-sitter-python 0.23 |
-
-Each extractor produces a `FactTable` containing per-function analysis:
-- **Transactions** — DB transaction boundaries and lock-for-update usage
-- **Locks** — Concurrency locks (DB locks, cache locks, shared locks)
-- **Catch blocks** — Exception handling with action classification (rethrow, log, silent swallow)
-- **External calls** — API/network calls, especially those inside transactions
-- **State mutations** — Create/Update/Delete operations with targets
-- **Null risks** — Potential null dereference / unwrap / panic sites
-- **Parameters** — Function parameters with type hints and nullability
 
 ## Installation
 
@@ -140,134 +82,133 @@ Add to your Claude Code MCP settings:
 }
 ```
 
-### Basic workflow
-
-The typical refinement pipeline has 5 steps (or 4 with the combined tool):
+### Typical workflow
 
 ```
-1. discover_plan        → Find plan file, extract file references
-2. extract_facts        → Run tree-sitter on referenced files
-3. prepare_attack       → Generate red team prompts from facts
-   (run 2-4 LLM agents with the generated prompts)
-4. synthesize_findings  → Parse red team output, dedup, rank, generate blue prompt
-   (run 1 LLM agent with the blue prompt)
-5. finalize_refinement  → Append findings to plan file
+1. Change some code
+2. structural_diff   → What signatures changed? Any breaking changes?
+3. impact_analysis   → Who calls the functions I changed?
+4. health_snapshot   → Did the code get more complex?
+5. Fix issues, commit with confidence
 ```
-
-Or use `discover_and_extract` to combine steps 1+2 into a single call.
 
 ## MCP Tools
 
-### discover_plan
+### structural_diff
 
-Find the most recently modified plan file and extract source file references.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `plan_dir` | string | No | Directory to search (default: `.claude/plans/`) |
-
-### extract_facts
-
-Run tree-sitter analysis on source files.
+Compare function signatures between two git refs (or git ref vs working tree). Detects added, removed, and changed functions with breaking change classification.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `file_paths` | string[] | Yes | Absolute paths to source files |
-| `diff_only` | bool | No | If true, only analyze git-changed files |
+| `file_paths` | string[] | Yes | Files to analyze |
+| `base_ref` | string | No | Git ref for "before" (default: `HEAD`) |
+| `compare_ref` | string | No | Git ref for "after" (default: working tree) |
 
-### discover_and_extract
+**Breaking change detection:**
+- Return type changed
+- Parameter added/removed
+- Parameter type changed
+- Parameter order changed
+- Nullable → non-nullable
 
-Combined discover + extract in one call.
+### impact_analysis
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `plan_dir` | string | No | Directory to search |
-| `diff_only` | bool | No | Only analyze git-changed files |
-
-### prepare_attack
-
-Generate red team prompts from plan content and fact tables.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `plan_path` | string | Yes | Path to the plan file |
-| `facts_json` | string | Yes | JSON-encoded fact tables from extract_facts |
-| `mode` | string | No | `default` (opus), `lite` (sonnet), or `auto` (haiku) |
-| `red_count` | u8 | No | Number of red teams (2-4). If omitted, auto-selected from facts |
-
-### synthesize_findings
-
-Parse red team markdown output, deduplicate, validate, rank, and generate blue team prompt.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `raw_reports` | string[] | Yes | Raw markdown output from each red team agent |
-| `plan_path` | string | No | Plan file path (for persistent state) |
-| `plan_summary` | string | No | Brief plan summary for blue team context |
-| `mode` | string | No | Cost mode for blue team model recommendation |
-
-### finalize_refinement
-
-Backup the plan file and append a refinement section with findings.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `plan_path` | string | Yes | Plan file to append to |
-| `blue_result` | string | No | Blue team analysis output |
-| `findings_json` | string | Yes | JSON-encoded findings from synthesize |
-| `mode` | string | No | Cost mode |
-
-### expand_blast_radius
-
-Search for callers of modified functions to assess change impact.
+Find callers of specified functions across the codebase. Auto-detects changed symbols from git diff if not provided.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `symbols` | string[] | No | Function names to search. Auto-detected from git diff if omitted |
-| `search_paths` | string[] | No | Directories to search (default: `["app/", "routes/"]`) |
+| `search_paths` | string[] | No | Directories to search (default: `["app/", "routes/", "src/"]`) |
 | `exclude_files` | string[] | No | Files to exclude from results |
-| `plan_files` | string[] | No | Plan files for auto-detecting changed symbols |
-| `max_per_symbol` | number | No | Max grep results per symbol (default: 20) |
+| `source_files` | string[] | No | Source files for auto-detecting changed symbols |
+| `max_per_symbol` | number | No | Max results per symbol (default: 20) |
 
-### extract_migration_facts
+### extract_facts
 
-Extract database schema from migration files for red team context.
+Run tree-sitter analysis on source files. Returns per-function structured facts:
+
+- **Transactions** — DB transaction boundaries and lock-for-update usage
+- **Locks** — Concurrency locks (DB locks, cache locks, shared locks)
+- **Catch blocks** — Exception handling with action classification
+- **External calls** — API/network calls, especially those inside transactions
+- **State mutations** — Create/Update/Delete operations with targets
+- **Null risks** — Potential null dereference / unwrap / panic sites
+- **Parameters** — Function parameters with type hints and nullability
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `file_paths` | string[] | Yes | Paths to source files |
+| `diff_only` | bool | No | If true, only analyze git-changed files |
+
+### extract_schema
+
+Parse Laravel migration files to extract database schema.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `migration_dir` | string | No | Path to migrations (default: `database/migrations`) |
-| `table_filter` | string[] | No | Only include matching table names |
 
-## Red Team Roles
+### health_snapshot
 
-| ID | Name | Focus | When Auto-Selected |
-|----|------|-------|--------------------|
-| RT-A | Single-Op | Silent failure, type safety, idempotency | Always |
-| RT-B | Multi-Op | Concurrency races, TOCTOU, behavioral change | Always |
-| RT-C | Data Integrity | Schema drift, constraint violations, partial writes | Mutations without transaction, external calls in TX, silent swallows |
-| RT-D | Auth Boundary | Permission checks, IDOR, privilege escalation | File paths contain auth/permission/middleware/login/session/guard/policy/role/access/token |
+Compute per-function health metrics with automatic warnings.
 
-When `red_count` is omitted from `prepare_attack`, the tool automatically selects which red teams to run based on signals in the extracted facts. RT-A and RT-B always run; RT-C and RT-D are added only when the facts suggest they would find real issues.
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `file_paths` | string[] | Yes | Files to analyze |
 
-## Modes
+**Metrics per function:**
+- Line count (warns > 50)
+- Parameter count (warns > 5)
+- Max nesting depth (warns > 4)
+- Branch count (if/for/while/match/switch)
 
-| Mode | Red Team Model | Blue Team Model | Use Case |
-|------|---------------|-----------------|----------|
-| `default` | opus | opus | Maximum accuracy |
-| `lite` | sonnet | sonnet | Good balance of cost and quality |
-| `auto` | haiku | haiku | Quick screening, lowest cost |
+## Example Output
 
-## Deduplication & Scoring
+### structural_diff
 
-Findings are deduplicated by:
-- **Same file + overlapping line ranges** → merged
-- **Same file + similar titles** (≥85% Levenshtein similarity) → merged
+```json
+{
+  "files": [{
+    "file": "app/Services/BillingService.php",
+    "added": [],
+    "removed": [{"name": "legacyProcess", "line_range": [42, 60]}],
+    "changed": [{
+      "name": "processPayment",
+      "breaking": true,
+      "reasons": [
+        "return type changed: Some(\"bool\") → Some(\"PaymentResult\")",
+        "parameter added: $note"
+      ],
+      "before": {"name": "processPayment", "params": [{"name": "$order", "type_hint": "Order"}], "return_type": "bool"},
+      "after": {"name": "processPayment", "params": [{"name": "$order", "type_hint": "Order"}, {"name": "$note", "type_hint": "?string"}], "return_type": "PaymentResult"}
+    }],
+    "unchanged_count": 8
+  }],
+  "total_added": 0,
+  "total_removed": 1,
+  "total_changed": 1,
+  "breaking_changes": 1
+}
+```
 
-Impact score = `severity_weight × domain_weight / 10 + source_bonus`
+### health_snapshot
 
-- Severity: Fatal=100, High=60
-- Domain weight: Payment/Billing (30) > Services (20) > Controllers (15) > Models (12) > Default (10) > Views (5) > Config/Test (3)
-- Source bonus: +20 if confirmed by multiple red teams
+```json
+{
+  "functions": [{
+    "name": "processPayment",
+    "file": "app/Services/BillingService.php",
+    "line_range": [42, 98],
+    "lines": 57,
+    "param_count": 2,
+    "max_nesting_depth": 4,
+    "branch_count": 6
+  }],
+  "warnings": [
+    "app/Services/BillingService.php: processPayment is 57 lines (consider splitting)"
+  ]
+}
+```
 
 ## License
 
