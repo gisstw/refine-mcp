@@ -2,171 +2,123 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-// ─── Red Team Identity ───────────────────────────────────────
+use crate::facts::types::FunctionFact;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum RedTeamId {
-    /// Single-op: silent failure + type safety + idempotency
-    RtA,
-    /// Multi-op: concurrency + TOCTOU + behavioral changes
-    RtB,
-    /// Data integrity: schema drift + data loss + constraint violations
-    RtC,
-    /// Auth boundary: privilege escalation + access control + session hijack
-    RtD,
-    /// Blue team: cross-analysis and synthesis (not a red team role)
-    BlueTeam,
+// ─── Structural Diff ────────────────────────────────────────
+
+/// A function signature (name + params + return type) for comparison.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FunctionSignature {
+    pub name: String,
+    pub params: Vec<ParamSignature>,
+    pub return_type: Option<String>,
 }
 
-// ─── Finding ─────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Severity {
-    Fatal,
-    High,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParamSignature {
+    pub name: String,
+    pub type_hint: Option<String>,
+    pub nullable: bool,
 }
 
-impl Severity {
-    /// Numeric rank: higher = more severe (Fatal=2, High=1).
-    #[must_use]
-    pub fn rank(self) -> u8 {
-        match self {
-            Self::Fatal => 2,
-            Self::High => 1,
-        }
-    }
-}
-
-impl PartialOrd for Severity {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Severity {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.rank().cmp(&other.rank())
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum FindingStatus {
-    #[default]
-    New,
-    Confirmed,
-    Fixed,
-    FalsePositive,
-}
-
+/// A change in a function's signature between two versions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Finding {
-    pub id: String,
-    pub severity: Severity,
-    pub title: String,
-    pub sources: Vec<RedTeamId>,
-    pub file_path: PathBuf,
-    pub line_range: Option<(u32, u32)>,
-    pub problem: String,
-    pub attack_scenario: String,
-    pub suggested_fix: Option<String>,
-    pub affected_plan_steps: Vec<String>,
-    #[serde(default)]
-    pub status: FindingStatus,
-    /// Set by `dedup::dedup_findings()` — do not set manually at construction.
-    #[serde(default)]
-    pub impact_score: u32,
+pub struct SignatureChange {
+    pub name: String,
+    pub file: PathBuf,
+    pub before: FunctionSignature,
+    pub after: FunctionSignature,
+    pub breaking: bool,
+    pub reasons: Vec<String>,
 }
 
-impl Finding {
-    /// Create a new finding with safe defaults (`status` = New, `impact_score` = 0).
-    #[must_use]
-    pub fn new(severity: Severity, title: String, source: RedTeamId, file_path: PathBuf) -> Self {
+/// Result of comparing two sets of FunctionFacts (before vs after).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralDiff {
+    pub file: PathBuf,
+    pub added: Vec<FunctionSummary>,
+    pub removed: Vec<FunctionSummary>,
+    pub changed: Vec<SignatureChange>,
+    pub unchanged_count: usize,
+}
+
+/// Lightweight summary of a function (for added/removed lists).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionSummary {
+    pub name: String,
+    pub line_range: (u32, u32),
+    pub params: Vec<ParamSignature>,
+    pub return_type: Option<String>,
+}
+
+/// Aggregated diff across multiple files.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralDiffReport {
+    pub files: Vec<StructuralDiff>,
+    pub total_added: usize,
+    pub total_removed: usize,
+    pub total_changed: usize,
+    pub breaking_changes: usize,
+}
+
+// ─── Health Snapshot ────────────────────────────────────────
+
+/// Per-function health metrics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionHealth {
+    pub name: String,
+    pub file: PathBuf,
+    pub line_range: (u32, u32),
+    pub lines: u32,
+    pub param_count: usize,
+    pub max_nesting_depth: u32,
+    pub branch_count: u32,
+}
+
+/// Health report for a set of files.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HealthReport {
+    pub functions: Vec<FunctionHealth>,
+    pub warnings: Vec<String>,
+}
+
+// ─── Conversion helpers ─────────────────────────────────────
+
+impl FunctionSignature {
+    /// Extract signature from a `FunctionFact`.
+    pub fn from_fact(fact: &FunctionFact) -> Self {
         Self {
-            id: "RT-000".to_string(), // Placeholder — parser/dedup assigns final IDs
-            severity,
-            title,
-            sources: vec![source],
-            file_path,
-            line_range: None,
-            problem: String::new(),
-            attack_scenario: String::new(),
-            suggested_fix: None,
-            affected_plan_steps: Vec::new(),
-            status: FindingStatus::New,
-            impact_score: 0,
+            name: fact.name.clone(),
+            params: fact
+                .parameters
+                .iter()
+                .map(|p| ParamSignature {
+                    name: p.name.clone(),
+                    type_hint: p.type_hint.clone(),
+                    nullable: p.nullable,
+                })
+                .collect(),
+            return_type: fact.return_type.clone(),
         }
     }
 }
 
-// ─── Refine Mode ─────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum RefineMode {
-    /// 2 Opus red + 1 Opus blue
-    #[default]
-    Default,
-    /// 2 Sonnet red + 1 Sonnet blue
-    Lite,
-    /// 2 Haiku red + 1 Sonnet blue
-    Auto,
-}
-
-impl RefineMode {
-    #[must_use]
-    pub fn red_model(&self) -> &'static str {
-        match self {
-            Self::Default => "opus",
-            Self::Lite => "sonnet",
-            Self::Auto => "haiku",
+impl FunctionSummary {
+    /// Extract summary from a `FunctionFact`.
+    pub fn from_fact(fact: &FunctionFact) -> Self {
+        Self {
+            name: fact.name.clone(),
+            line_range: fact.line_range,
+            params: fact
+                .parameters
+                .iter()
+                .map(|p| ParamSignature {
+                    name: p.name.clone(),
+                    type_hint: p.type_hint.clone(),
+                    nullable: p.nullable,
+                })
+                .collect(),
+            return_type: fact.return_type.clone(),
         }
     }
-
-    #[must_use]
-    pub fn blue_model(&self) -> &'static str {
-        match self {
-            Self::Default => "opus",
-            Self::Lite | Self::Auto => "sonnet",
-        }
-    }
-
-    /// Default number of red teams for this mode.
-    ///
-    /// Can be overridden via `PrepareAttackParams::red_count`.
-    #[must_use]
-    pub fn red_count(&self) -> usize {
-        match self {
-            Self::Default | Self::Lite | Self::Auto => 2,
-        }
-    }
-}
-
-// ─── Prompt Output ───────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RedTeamPrompt {
-    pub id: RedTeamId,
-    pub prompt: String,
-    pub recommended_model: String,
-}
-
-// ─── Synthesis Output ────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SynthesisResult {
-    pub findings: Vec<Finding>,
-    pub blue_prompt: String,
-    pub stats: SynthesisStats,
-    pub refinement_draft: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SynthesisStats {
-    pub raw_count: usize,
-    pub after_dedup: usize,
-    pub after_validation: usize,
-    pub fatal_count: usize,
-    pub high_count: usize,
 }

@@ -51,7 +51,7 @@ pub struct FunctionFact {
     pub null_risks: Vec<NullRiskFact>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ParamFact {
     pub name: String,
     pub type_hint: Option<String>,
