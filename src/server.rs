@@ -91,18 +91,26 @@ impl RefineServer {
         let params = params.0;
         let base_ref = params.base_ref.as_deref().unwrap_or("HEAD");
         let mut all_diffs = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
 
         for file_path in &params.file_paths {
-            let path = PathBuf::from(file_path);
+            let resolved = resolve_path(file_path);
 
             let before_source = get_git_file_content(file_path, base_ref);
             let after_source = if let Some(ref compare) = params.compare_ref {
                 get_git_file_content(file_path, compare)
             } else {
-                std::fs::read_to_string(&path).unwrap_or_default()
+                match std::fs::read_to_string(&resolved) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        errors.push(format!("{}: {e}", resolved.display()));
+                        continue;
+                    }
+                }
             };
 
             if before_source.is_empty() && after_source.is_empty() {
+                errors.push(format!("{file_path}: file not found in git or working tree"));
                 continue;
             }
 
@@ -110,14 +118,18 @@ impl RefineServer {
             let before_facts = extract_functions(&before_source, lang);
             let after_facts = extract_functions(&after_source, lang);
 
-            let diff = compute_structural_diff(&path, &before_facts, &after_facts);
+            let diff = compute_structural_diff(&resolved, &before_facts, &after_facts);
             if !diff.added.is_empty() || !diff.removed.is_empty() || !diff.changed.is_empty() {
                 all_diffs.push(diff);
             }
         }
 
         let report = aggregate_diffs(all_diffs);
-        let json = serde_json::to_string_pretty(&report).unwrap_or_default();
+        let mut result = serde_json::to_value(&report).unwrap_or_default();
+        if !errors.is_empty() {
+            result["errors"] = serde_json::json!(errors);
+        }
+        let json = serde_json::to_string_pretty(&result).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
@@ -186,18 +198,24 @@ impl RefineServer {
         }
 
         let mut tables: Vec<FactTable> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
         for path_str in &file_paths {
-            let path = Path::new(path_str);
-            let Ok(source) = std::fs::read_to_string(path) else {
-                continue;
-            };
-            let lang = detect_language(path_str);
-            if let Some(table) = extract_fact_table(path, &source, lang) {
-                tables.push(table);
+            match read_source(path_str) {
+                Ok((resolved, source)) => {
+                    let lang = detect_language(path_str);
+                    if let Some(table) = extract_fact_table(&resolved, &source, lang) {
+                        tables.push(table);
+                    }
+                }
+                Err(e) => errors.push(e),
             }
         }
 
-        let json = serde_json::to_string_pretty(&tables).unwrap_or_default();
+        let mut result = serde_json::json!({ "facts": tables });
+        if !errors.is_empty() {
+            result["errors"] = serde_json::json!(errors);
+        }
+        let json = serde_json::to_string_pretty(&result).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
@@ -237,23 +255,28 @@ impl RefineServer {
         let params = params.0;
         let mut all_functions = Vec::new();
         let mut all_warnings = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
 
         for path_str in &params.file_paths {
-            let path = PathBuf::from(path_str);
-            let Ok(source) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let lang_str = detect_language(path_str);
-            let report = compute_health(&source, &path, lang_str);
-            all_functions.extend(report.functions);
-            all_warnings.extend(report.warnings);
+            match read_source(path_str) {
+                Ok((resolved, source)) => {
+                    let lang_str = detect_language(path_str);
+                    let report = compute_health(&source, &resolved, lang_str);
+                    all_functions.extend(report.functions);
+                    all_warnings.extend(report.warnings);
+                }
+                Err(e) => errors.push(e),
+            }
         }
 
-        let report = refine_mcp::types::HealthReport {
-            functions: all_functions,
-            warnings: all_warnings,
-        };
-        let json = serde_json::to_string_pretty(&report).unwrap_or_default();
+        let mut result = serde_json::json!({
+            "functions": all_functions,
+            "warnings": all_warnings,
+        });
+        if !errors.is_empty() {
+            result["errors"] = serde_json::json!(errors);
+        }
+        let json = serde_json::to_string_pretty(&result).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 }
@@ -272,6 +295,50 @@ impl ServerHandler for RefineServer {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
         }
+    }
+}
+
+// ─── Path Resolution ───────────────────────────────────────────
+
+/// Resolve a file path: if relative and not found in CWD, try common project roots.
+/// Returns the resolved absolute path or the original if nothing found.
+fn resolve_path(path_str: &str) -> PathBuf {
+    let path = PathBuf::from(path_str);
+
+    // Already absolute and exists — use as-is
+    if path.is_absolute() {
+        return path;
+    }
+
+    // Relative — try CWD first
+    if path.exists() {
+        return path;
+    }
+
+    // Try git repo root (most reliable for project-relative paths)
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+    {
+        if output.status.success() {
+            let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let candidate = PathBuf::from(&root).join(&path);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    // Fallback: return original (will fail at read, but error gets reported)
+    path
+}
+
+/// Read a file with path resolution. Returns (resolved_path, source) or error message.
+fn read_source(path_str: &str) -> Result<(PathBuf, String), String> {
+    let resolved = resolve_path(path_str);
+    match std::fs::read_to_string(&resolved) {
+        Ok(source) => Ok((resolved, source)),
+        Err(e) => Err(format!("{}: {e}", resolved.display())),
     }
 }
 
