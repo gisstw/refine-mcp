@@ -7,18 +7,18 @@ use refine_mcp::facts::rust_lang::extract_rust_facts;
 
 const OWN_FILES: &[&str] = &[
     "src/server.rs",
-    "src/state.rs",
     "src/types.rs",
     "src/lib.rs",
     "src/main.rs",
-    "src/dedup/mod.rs",
+    "src/diff.rs",
+    "src/health.rs",
     "src/facts/php.rs",
     "src/facts/rust_lang.rs",
     "src/facts/typescript.rs",
     "src/facts/python.rs",
     "src/facts/types.rs",
-    "src/parser/mod.rs",
-    "src/prompts/mod.rs",
+    "src/facts/blast_radius.rs",
+    "src/facts/migration.rs",
 ];
 
 #[test]
