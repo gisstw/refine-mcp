@@ -32,7 +32,7 @@ pub struct SignatureChange {
     pub reasons: Vec<String>,
 }
 
-/// Result of comparing two sets of FunctionFacts (before vs after).
+/// Result of comparing two sets of `FunctionFact`s (before vs after).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StructuralDiff {
     pub file: PathBuf,
@@ -86,6 +86,7 @@ pub struct HealthReport {
 
 impl FunctionSignature {
     /// Extract signature from a `FunctionFact`.
+    #[must_use]
     pub fn from_fact(fact: &FunctionFact) -> Self {
         Self {
             name: fact.name.clone(),
@@ -105,6 +106,7 @@ impl FunctionSignature {
 
 impl FunctionSummary {
     /// Extract summary from a `FunctionFact`.
+    #[must_use]
     pub fn from_fact(fact: &FunctionFact) -> Self {
         Self {
             name: fact.name.clone(),

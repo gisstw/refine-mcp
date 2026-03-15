@@ -2,10 +2,13 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::facts::types::FunctionFact;
-use crate::types::{FunctionSignature, FunctionSummary, SignatureChange, StructuralDiff, StructuralDiffReport};
+use crate::types::{
+    FunctionSignature, FunctionSummary, SignatureChange, StructuralDiff, StructuralDiffReport,
+};
 
 /// Compare before/after function lists for a single file.
 /// Matches functions by name, then compares signatures.
+#[must_use]
 pub fn compute_structural_diff(
     file: &Path,
     before: &[FunctionFact],
@@ -58,6 +61,7 @@ pub fn compute_structural_diff(
 }
 
 /// Aggregate diffs from multiple files into a report.
+#[must_use]
 pub fn aggregate_diffs(diffs: Vec<StructuralDiff>) -> StructuralDiffReport {
     let mut report = StructuralDiffReport::default();
     for d in &diffs {

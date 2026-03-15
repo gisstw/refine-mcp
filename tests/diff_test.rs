@@ -55,10 +55,12 @@ fn detects_signature_change_return_type() {
     assert!(diff.removed.is_empty());
     assert_eq!(diff.changed.len(), 1);
     assert!(diff.changed[0].breaking);
-    assert!(diff.changed[0]
-        .reasons
-        .iter()
-        .any(|r| r.contains("return type")));
+    assert!(
+        diff.changed[0]
+            .reasons
+            .iter()
+            .any(|r| r.contains("return type"))
+    );
 }
 
 #[test]
@@ -89,29 +91,33 @@ fn unchanged_function_not_reported() {
 #[test]
 fn detects_param_type_change() {
     let before = vec![make_func("update", vec![("$amount", Some("float"))], None)];
-    let after = vec![make_func("update", vec![("$amount", Some("Decimal"))], None)];
+    let after = vec![make_func(
+        "update",
+        vec![("$amount", Some("Decimal"))],
+        None,
+    )];
     let diff = compute_structural_diff(&PathBuf::from("test.php"), &before, &after);
     assert_eq!(diff.changed.len(), 1);
     assert!(diff.changed[0].breaking);
-    assert!(diff.changed[0]
-        .reasons
-        .iter()
-        .any(|r| r.contains("type changed")));
+    assert!(
+        diff.changed[0]
+            .reasons
+            .iter()
+            .any(|r| r.contains("type changed"))
+    );
 }
 
 #[test]
 fn detects_param_removed() {
-    let before = vec![make_func(
-        "render",
-        vec![("$a", None), ("$b", None)],
-        None,
-    )];
+    let before = vec![make_func("render", vec![("$a", None), ("$b", None)], None)];
     let after = vec![make_func("render", vec![("$a", None)], None)];
     let diff = compute_structural_diff(&PathBuf::from("test.php"), &before, &after);
     assert_eq!(diff.changed.len(), 1);
     assert!(diff.changed[0].breaking);
-    assert!(diff.changed[0]
-        .reasons
-        .iter()
-        .any(|r| r.contains("removed")));
+    assert!(
+        diff.changed[0]
+            .reasons
+            .iter()
+            .any(|r| r.contains("removed"))
+    );
 }

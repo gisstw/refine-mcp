@@ -27,11 +27,19 @@ class Foo {
     let report = compute_health(source, &PathBuf::from("test.php"), "php");
     assert_eq!(report.functions.len(), 2);
 
-    let simple = report.functions.iter().find(|f| f.name == "simple").unwrap();
+    let simple = report
+        .functions
+        .iter()
+        .find(|f| f.name == "simple")
+        .unwrap();
     assert_eq!(simple.param_count, 1);
     assert!(simple.max_nesting_depth <= 1);
 
-    let complex = report.functions.iter().find(|f| f.name == "complex").unwrap();
+    let complex = report
+        .functions
+        .iter()
+        .find(|f| f.name == "complex")
+        .unwrap();
     assert_eq!(complex.param_count, 3);
     assert!(
         complex.max_nesting_depth >= 3,
@@ -80,8 +88,16 @@ fn branchy(a: i32, b: Option<i32>) -> i32 {
     let report = compute_health(source, &PathBuf::from("test.rs"), "rust");
     assert_eq!(report.functions.len(), 2);
 
-    let branchy = report.functions.iter().find(|f| f.name == "branchy").unwrap();
-    assert!(branchy.branch_count >= 2, "expected >= 2, got {}", branchy.branch_count);
+    let branchy = report
+        .functions
+        .iter()
+        .find(|f| f.name == "branchy")
+        .unwrap();
+    assert!(
+        branchy.branch_count >= 2,
+        "expected >= 2, got {}",
+        branchy.branch_count
+    );
 }
 
 #[test]

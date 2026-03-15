@@ -5,6 +5,7 @@ use tree_sitter::Parser;
 use crate::types::{FunctionHealth, HealthReport};
 
 /// Compute health metrics for all functions in a source file.
+#[must_use]
 pub fn compute_health(source: &str, file: &Path, lang: &str) -> HealthReport {
     let mut parser = Parser::new();
     let language: tree_sitter::Language = match lang {
@@ -68,10 +69,7 @@ fn collect_functions(
 
     let is_function = matches!(
         kind,
-        "function_definition"
-            | "method_declaration"
-            | "function_item"
-            | "function_declaration"
+        "function_definition" | "method_declaration" | "function_item" | "function_declaration"
     );
 
     if is_function {

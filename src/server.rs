@@ -32,7 +32,7 @@ pub struct ImpactAnalysisParams {
     /// Function/method names to search for callers.
     /// If empty, auto-detects changed symbols from git diff.
     pub symbols: Option<Vec<String>>,
-    /// Directories to search (default: ["app/", "routes/", "src/"])
+    /// Directories to search (default: `app/`, `routes/`, `src/`)
     pub search_paths: Option<Vec<String>>,
     /// Files to exclude from results
     pub exclude_files: Option<Vec<String>>,
@@ -110,7 +110,9 @@ impl RefineServer {
             };
 
             if before_source.is_empty() && after_source.is_empty() {
-                errors.push(format!("{file_path}: file not found in git or working tree"));
+                errors.push(format!(
+                    "{file_path}: file not found in git or working tree"
+                ));
                 continue;
             }
 
@@ -150,7 +152,7 @@ impl RefineServer {
 
         let symbols = match params.symbols {
             Some(ref syms) if !syms.is_empty() => syms.clone(),
-            _ => auto_detect_symbols(&params.source_files),
+            _ => auto_detect_symbols(params.source_files.as_ref()),
         };
 
         if symbols.is_empty() {
@@ -358,7 +360,7 @@ fn git_toplevel_from_cwd() -> Option<PathBuf> {
     None
 }
 
-/// Read a file with path resolution. Returns (resolved_path, source) or error message.
+/// Read a file with path resolution. Returns (`resolved_path`, source) or error message.
 fn read_source(path_str: &str) -> Result<(PathBuf, String), String> {
     let resolved = resolve_path(path_str);
     match std::fs::read_to_string(&resolved) {
@@ -370,16 +372,16 @@ fn read_source(path_str: &str) -> Result<(PathBuf, String), String> {
 // ─── Helpers ───────────────────────────────────────────────────
 
 fn detect_language(path: &str) -> &str {
-    if path.ends_with(".php") {
-        "php"
-    } else if path.ends_with(".rs") {
-        "rust"
-    } else if path.ends_with(".ts") || path.ends_with(".tsx") {
-        "typescript"
-    } else if path.ends_with(".py") {
-        "python"
-    } else {
-        "unknown"
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    match ext {
+        "php" => "php",
+        "rs" => "rust",
+        "ts" | "tsx" => "typescript",
+        "py" => "python",
+        _ => "unknown",
     }
 }
 
@@ -429,15 +431,19 @@ fn filter_to_changed_files(paths: &[String]) -> Vec<String> {
 
     paths
         .iter()
-        .filter(|p| changed.iter().any(|c| p.ends_with(c) || c.ends_with(p.as_str())))
+        .filter(|p| {
+            changed
+                .iter()
+                .any(|c| p.ends_with(c) || c.ends_with(p.as_str()))
+        })
         .cloned()
         .collect()
 }
 
-fn auto_detect_symbols(source_files: &Option<Vec<String>>) -> Vec<String> {
+fn auto_detect_symbols(source_files: Option<&Vec<String>>) -> Vec<String> {
+    let empty: &[String] = &[];
     let files: Vec<PathBuf> = source_files
-        .as_deref()
-        .unwrap_or(&[])
+        .map_or(empty, Vec::as_slice)
         .iter()
         .map(PathBuf::from)
         .collect();
