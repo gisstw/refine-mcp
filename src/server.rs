@@ -300,12 +300,12 @@ impl ServerHandler for RefineServer {
 
 // ─── Path Resolution ───────────────────────────────────────────
 
-/// Resolve a file path: if relative and not found in CWD, try common project roots.
-/// Returns the resolved absolute path or the original if nothing found.
+/// Resolve a file path: if relative and not found in CWD, search for it.
+/// Strategy: CWD → parent directories (looking for .git) → common project roots.
 fn resolve_path(path_str: &str) -> PathBuf {
     let path = PathBuf::from(path_str);
 
-    // Already absolute and exists — use as-is
+    // Already absolute — use as-is
     if path.is_absolute() {
         return path;
     }
@@ -315,22 +315,47 @@ fn resolve_path(path_str: &str) -> PathBuf {
         return path;
     }
 
-    // Try git repo root (most reliable for project-relative paths)
-    if let Ok(output) = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-    {
-        if output.status.success() {
-            let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let candidate = PathBuf::from(&root).join(&path);
+    // Try git repo root from CWD
+    if let Some(root) = git_toplevel_from_cwd() {
+        let candidate = root.join(&path);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    // Walk up from CWD looking for directories that contain this relative path
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut dir = cwd.as_path();
+        loop {
+            let candidate = dir.join(&path);
             if candidate.exists() {
                 return candidate;
+            }
+            match dir.parent() {
+                Some(parent) => dir = parent,
+                None => break,
             }
         }
     }
 
     // Fallback: return original (will fail at read, but error gets reported)
     path
+}
+
+/// Get git toplevel from CWD (may fail if CWD is not in a git repo).
+fn git_toplevel_from_cwd() -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !root.is_empty() {
+            return Some(PathBuf::from(root));
+        }
+    }
+    None
 }
 
 /// Read a file with path resolution. Returns (resolved_path, source) or error message.
