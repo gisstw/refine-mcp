@@ -3,9 +3,9 @@ name = "refine-mcp"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Grounded red-blue adversarial plan refinement via MCP — tree-sitter fact extraction + LLM red/blue team analysis"
+description = "Structural change impact analyzer via MCP — tree-sitter powered diff, blast radius, and code health"
 license = "MIT OR Apache-2.0"
-keywords = ["mcp", "code-review", "security", "tree-sitter", "red-team"]
+keywords = ["mcp", "code-analysis", "tree-sitter", "structural-diff", "code-health"]
 categories = ["development-tools", "command-line-utilities"]
 readme = "README.md"
 
@@ -45,9 +45,6 @@ schemars = "1"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# String similarity (for dedup)
-strsim = "0.11"
-
 # Error handling
 thiserror = "2"
 anyhow = "1"
@@ -56,11 +53,8 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Regex (for markdown parsing + fact extraction)
+# Regex (for fact extraction patterns)
 regex = "1"
-
-# Date formatting (replaces hand-rolled date math)
-time = { version = "0.3", features = ["formatting"] }
 
 [dev-dependencies]
 tempfile = "3"
