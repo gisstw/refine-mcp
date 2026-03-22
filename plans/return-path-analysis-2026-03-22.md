@@ -72,10 +72,10 @@ pub struct SilentSkipFact {
 
 ## 實作步驟
 
-- [ ] Step 1: types.rs 加入 ReturnPathFact, ReturnKind, SilentSkipFact
-- [ ] Step 2: PHP extractor 加入 return path 偵測
-- [ ] Step 3: PHP extractor 加入 silent skip 偵測
-- [ ] Step 4: FunctionFact 加入 return_paths + silent_skips 欄位
-- [ ] Step 5: 更新 prompts ANGLE_A 加入新的 attack patterns
-- [ ] Step 6: 測試 + 編譯
-- [ ] Step 7: 建置 release binary
+- [x] Step 1: types.rs 加入 ReturnPathFact, ReturnKind, SilentSkipFact
+- [x] Step 2: PHP extractor 加入 return path 偵測
+- [x] Step 3: PHP extractor 加入 silent skip 偵測
+- [x] Step 4: FunctionFact 加入 return_paths + silent_skips 欄位
+- [x] Step 5: 更新 prompts ANGLE_A 加入新的 attack patterns
+- [x] Step 6: 測試 + 編譯 (125 tests, 0 failed)
+- [x] Step 7: 建置 release binary (commit 9012138)
