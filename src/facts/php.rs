@@ -6,7 +6,8 @@ use tree_sitter::Parser;
 
 use super::types::{
     CatchAction, CatchFact, ExternalCallFact, FactTable, FunctionFact, Language, LockFact,
-    LockKind, MutationFact, MutationKind, NullRiskFact, ParamFact, TransactionFact,
+    LockKind, MutationFact, MutationKind, NullRiskFact, ParamFact, ReturnKind, ReturnPathFact,
+    SilentSkipFact, TransactionFact,
 };
 
 // ─── Pre-compiled Regexes ──────────────────────────────────────
@@ -150,6 +151,8 @@ fn extract_method_fact(method: tree_sitter::Node, source: &[u8]) -> Option<Funct
     let external_calls = extract_external_calls(method_text, start_line, transaction.as_ref());
     let state_mutations = extract_mutations(method_text, start_line);
     let null_risks = extract_null_risks(method_text, start_line);
+    let return_paths = extract_return_paths(method_text, start_line);
+    let silent_skips = extract_silent_skips(method_text, start_line);
 
     Some(FunctionFact {
         name: method_name,
@@ -162,6 +165,8 @@ fn extract_method_fact(method: tree_sitter::Node, source: &[u8]) -> Option<Funct
         external_calls,
         state_mutations,
         null_risks,
+        return_paths,
+        silent_skips,
     })
 }
 
@@ -394,6 +399,129 @@ fn extract_null_risks(method_text: &str, base_line: u32) -> Vec<NullRiskFact> {
     risks
 }
 
+// ─── Return Path Analysis ──────────────────────────────────────
+
+fn extract_return_paths(method_text: &str, base_line: u32) -> Vec<ReturnPathFact> {
+    use regex::Regex;
+    use std::sync::LazyLock;
+
+    static RE_RETURN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)^\s*return\b(.*);\s*$").expect("valid regex")
+    });
+    static RE_THROW: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)^\s*throw\s+new\b").expect("valid regex")
+    });
+    static RE_ERROR_KEY: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"['"]error['"]\s*=>"#).expect("valid regex")
+    });
+    static RE_SUCCESS_FALSE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"['"]success['"]\s*=>\s*false"#).expect("valid regex")
+    });
+
+    let mut paths = Vec::new();
+
+    for (i, line) in method_text.lines().enumerate() {
+        let trimmed = line.trim();
+        #[allow(clippy::cast_possible_truncation)]
+        let line_num = base_line + i as u32;
+
+        // Detect throw statements
+        if RE_THROW.is_match(trimmed) {
+            let expr = trimmed.chars().take(80).collect::<String>();
+            paths.push(ReturnPathFact {
+                line: line_num,
+                kind: ReturnKind::Throw,
+                expression: expr,
+            });
+            continue;
+        }
+
+        // Detect return statements
+        if let Some(cap) = RE_RETURN.captures(trimmed) {
+            let return_expr = cap.get(1).map_or("", |m| m.as_str()).trim();
+            let kind = classify_return_expr(return_expr, &RE_ERROR_KEY, &RE_SUCCESS_FALSE);
+            let expr = return_expr.chars().take(80).collect::<String>();
+            paths.push(ReturnPathFact {
+                line: line_num,
+                kind,
+                expression: expr,
+            });
+        }
+    }
+
+    paths
+}
+
+fn classify_return_expr(expr: &str, re_error: &regex::Regex, re_success_false: &regex::Regex) -> ReturnKind {
+    if expr.is_empty() {
+        return ReturnKind::Void;
+    }
+    if expr == "null" || expr == "false" {
+        return ReturnKind::Null;
+    }
+    // return ['error' => ...] or return ['success' => false, ...]
+    if re_error.is_match(expr) || re_success_false.is_match(expr) {
+        return ReturnKind::ErrorArray;
+    }
+    ReturnKind::Value
+}
+
+// ─── Silent Skip Detection ────────────────────────────────────
+
+fn extract_silent_skips(method_text: &str, base_line: u32) -> Vec<SilentSkipFact> {
+    use regex::Regex;
+    use std::sync::LazyLock;
+
+    // Match: if ($x === null) or if (!$x) or if (is_null($x)) or if ($x == null)
+    static RE_NULL_CHECK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)^\s*if\s*\(\s*(?:!\s*(\$\w+)|(\$\w+)\s*===?\s*null|is_null\((\$\w+)\))\s*\)").expect("valid regex")
+    });
+
+    let lines: Vec<&str> = method_text.lines().collect();
+    let mut skips = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(cap) = RE_NULL_CHECK.captures(line) {
+            let check_var = cap.get(1)
+                .or(cap.get(2))
+                .or(cap.get(3))
+                .map_or("", |m| m.as_str());
+
+            // Look at the next 1-3 lines for continue/return without throw
+            let body_range = (i + 1)..std::cmp::min(i + 4, lines.len());
+            for j in body_range {
+                let body_line = lines[j].trim();
+                let action = if body_line == "continue;" {
+                    Some("continue")
+                } else if body_line == "return;" || body_line == "return null;" {
+                    Some("return null")
+                } else if body_line == "return [];" || body_line == "return false;" {
+                    Some("return empty")
+                } else {
+                    None
+                };
+
+                if let Some(act) = action {
+                    #[allow(clippy::cast_possible_truncation)]
+                    skips.push(SilentSkipFact {
+                        line: base_line + i as u32,
+                        check_expression: check_var.to_string(),
+                        action: act.to_string(),
+                    });
+                    break;
+                }
+
+                // If we hit a throw or a multi-line block, stop looking
+                if body_line.starts_with("throw ") || body_line == "}" {
+                    break;
+                }
+            }
+        }
+    }
+
+    skips
+}
+
 // ─── Warning Generation ────────────────────────────────────────
 
 fn generate_warnings(functions: &[FunctionFact], warnings: &mut Vec<String>) {
@@ -435,6 +563,29 @@ fn generate_warnings(functions: &[FunctionFact], warnings: &mut Vec<String>) {
             warnings.push(format!(
                 "{}: read-modify-write without lock (TOCTOU risk)",
                 f.name
+            ));
+        }
+        // Mixed return paths: function returns both error arrays and values
+        let has_error = f.return_paths.iter().any(|r| r.kind == ReturnKind::ErrorArray);
+        let has_value = f.return_paths.iter().any(|r| r.kind == ReturnKind::Value);
+        let has_null = f.return_paths.iter().any(|r| r.kind == ReturnKind::Null);
+        if has_error && has_value {
+            warnings.push(format!(
+                "{}: mixed return paths (ErrorArray + Value) — callers must check for error key",
+                f.name
+            ));
+        }
+        if has_null && has_value {
+            warnings.push(format!(
+                "{}: returns null on some paths, value on others — callers must null-check",
+                f.name
+            ));
+        }
+        // Silent skips
+        for skip in &f.silent_skips {
+            warnings.push(format!(
+                "{}: null check on {} at L{} leads to '{}' instead of throw",
+                f.name, skip.check_expression, skip.line, skip.action
             ));
         }
     }

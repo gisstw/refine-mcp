@@ -125,6 +125,8 @@ fn extract_function_fact(func: tree_sitter::Node, source: &[u8]) -> Option<Funct
         external_calls,
         state_mutations,
         null_risks,
+        return_paths: Vec::new(),
+        silent_skips: Vec::new(),
     })
 }
 

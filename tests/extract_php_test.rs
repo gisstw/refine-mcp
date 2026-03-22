@@ -142,3 +142,45 @@ fn generates_warnings_for_multi_mutation_without_transaction() {
         .any(|w: &String| w.contains("createOnlineReservation") && w.contains("transaction"));
     assert!(has_warning);
 }
+
+#[test]
+fn detects_return_paths() {
+    let source = include_str!("fixtures/sample_service.php");
+    let path = PathBuf::from("tests/fixtures/sample_service.php");
+    let table = extract_php_facts(&path, source).expect("parse should succeed");
+
+    // cancelAndRefund: return true (Value) + return false (Null)
+    let cancel = &table.functions[0];
+    assert!(
+        !cancel.return_paths.is_empty(),
+        "cancelAndRefund should have return paths"
+    );
+    let has_value = cancel.return_paths.iter().any(|r| r.kind == ReturnKind::Value);
+    let has_null = cancel.return_paths.iter().any(|r| r.kind == ReturnKind::Null);
+    assert!(has_value, "should detect 'return true' as Value");
+    assert!(has_null, "should detect 'return false' as Null");
+
+    // modifyReservation: return false (Null) + return $reservation (Value) → mixed
+    let modify = &table.functions[2];
+    let has_value = modify.return_paths.iter().any(|r| r.kind == ReturnKind::Value);
+    let has_null = modify.return_paths.iter().any(|r| r.kind == ReturnKind::Null);
+    assert!(has_value && has_null, "modifyReservation should have mixed return paths");
+}
+
+#[test]
+fn generates_mixed_return_warning() {
+    let source = include_str!("fixtures/sample_service.php");
+    let path = PathBuf::from("tests/fixtures/sample_service.php");
+    let table = extract_php_facts(&path, source).expect("parse should succeed");
+
+    // modifyReservation returns null on some paths, value on others
+    let has_mixed_warning = table
+        .warnings
+        .iter()
+        .any(|w: &String| w.contains("modifyReservation") && w.contains("null"));
+    assert!(
+        has_mixed_warning,
+        "should warn about mixed return paths in modifyReservation. Warnings: {:?}",
+        table.warnings
+    );
+}

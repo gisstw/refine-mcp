@@ -49,6 +49,10 @@ pub struct FunctionFact {
     pub state_mutations: Vec<MutationFact>,
     #[serde(default)]
     pub null_risks: Vec<NullRiskFact>,
+    #[serde(default)]
+    pub return_paths: Vec<ReturnPathFact>,
+    #[serde(default)]
+    pub silent_skips: Vec<SilentSkipFact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -131,6 +135,47 @@ pub struct NullRiskFact {
     pub expression: String,
     #[serde(default)]
     pub reason: String,
+}
+
+// ─── Return Path Facts ──────────────────────────────────────
+
+/// A return statement in a function, classified by what it returns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReturnPathFact {
+    pub line: u32,
+    pub kind: ReturnKind,
+    /// The return expression (truncated to ~80 chars)
+    #[serde(default)]
+    pub expression: String,
+}
+
+/// Classification of a return statement.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReturnKind {
+    /// return ['error' => ...] or return with error key
+    ErrorArray,
+    /// return null or return false (error sentinel)
+    Null,
+    /// return $value (normal success path)
+    Value,
+    /// bare `return;` (void)
+    Void,
+    /// throw new Exception (not a return, but terminates the path)
+    Throw,
+}
+
+/// A null/empty check that leads to silent skip (continue/return) instead of throw.
+///
+/// Pattern: `if ($x === null) { continue; }` or `if (!$x) { return; }`
+/// These silently drop data instead of failing loudly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SilentSkipFact {
+    pub line: u32,
+    /// What's being checked (e.g., "$rt", "$result")
+    pub check_expression: String,
+    /// What happens: "continue", "return null", "return []", "return"
+    pub action: String,
 }
 
 // ─── Blast Radius Facts ─────────────────────────────────────
@@ -231,6 +276,8 @@ mod tests {
                     expression: "$reservation->member".to_string(),
                     reason: "member relation can be null for walk-in guests".to_string(),
                 }],
+                return_paths: Vec::new(),
+                silent_skips: Vec::new(),
             }],
             warnings: vec![],
             callers: vec![],

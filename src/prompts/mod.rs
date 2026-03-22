@@ -332,7 +332,9 @@ const ANGLE_A: &str = "\
 5. `parameters` with `nullable: true` — does the caller handle null?
 6. `state_mutations` kind=Create without unique constraint — duplicate requests create duplicates
 7. Multiple `state_mutations` without `transaction` — partial success cannot roll back
-8. `callers` — if signature changed, do all callers pass correct args and handle new return type?";
+8. `callers` — if signature changed, do all callers pass correct args and handle new return type?
+9. `return_paths` with mixed ErrorArray+Value — function returns error array on some paths and value on others. Callers MUST check for error key but often don't — leads to undefined index or type errors
+10. `silent_skips` — null check leads to continue/return instead of throw. Data is silently dropped, parent record may be created without children, leaving inconsistent state";
 
 const ANGLE_B: &str = "\
 ### Concurrency Race + TOCTOU
@@ -382,6 +384,8 @@ mod tests {
                 external_calls: Vec::new(),
                 state_mutations: Vec::new(),
                 null_risks: Vec::new(),
+                return_paths: Vec::new(),
+                silent_skips: Vec::new(),
             }],
             warnings: vec!["process: 2 SQL mutations without transaction".to_string()],
             callers: vec![],
@@ -502,6 +506,8 @@ mod tests {
                     },
                 ],
                 null_risks: Vec::new(),
+                return_paths: Vec::new(),
+                silent_skips: Vec::new(),
             }],
             warnings: vec![],
             callers: vec![],
@@ -571,6 +577,8 @@ mod tests {
                 }],
                 state_mutations: Vec::new(),
                 null_risks: Vec::new(),
+                return_paths: Vec::new(),
+                silent_skips: Vec::new(),
             }],
             warnings: vec![],
             callers: vec![],
@@ -623,6 +631,8 @@ mod tests {
                     },
                 ],
                 null_risks: Vec::new(),
+                return_paths: Vec::new(),
+                silent_skips: Vec::new(),
             }],
             warnings: vec![],
             callers: vec![],

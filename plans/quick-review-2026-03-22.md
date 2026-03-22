@@ -91,12 +91,12 @@ pub struct QuickReviewParams {
 
 ## 實作步驟
 
-- [ ] Step 1: 建立 `templates/quick_review.md` 合併模板
-- [ ] Step 2: `src/prompts/mod.rs` 加入 `build_quick_review_prompt()`
-- [ ] Step 3: `src/server.rs` 加入 `QuickReviewParams` + `quick_review` 工具
-- [ ] Step 4: 測試 + 編譯
-- [ ] Step 5: 更新 `.claude/rules/refine-tools.md`
-- [ ] Step 6: 建置 release binary
+- [x] Step 1: 建立 `templates/quick_review.md` 合併模板
+- [x] Step 2: `src/prompts/mod.rs` 加入 `build_quick_review_prompt()`
+- [x] Step 3: `src/server.rs` 加入 `QuickReviewParams` + `quick_review` 工具
+- [x] Step 4: 測試 + 編譯 (全部通過)
+- [x] Step 5: 更新 `.claude/rules/refine-tools.md`
+- [x] Step 6: 建置 release binary (commit 7a771b2)
 
 ## 不做的事
 
