@@ -1,10 +1,11 @@
+use std::fmt::Write;
 use std::path::PathBuf;
 
 use refine_mcp::health::compute_health;
 
 #[test]
 fn health_for_php_file() {
-    let source = r#"<?php
+    let source = r"<?php
 class Foo {
     public function simple($x) {
         return $x + 1;
@@ -23,7 +24,7 @@ class Foo {
         return false;
     }
 }
-"#;
+";
     let report = compute_health(source, &PathBuf::from("test.php"), "php");
     assert_eq!(report.functions.len(), 2);
 
@@ -57,7 +58,7 @@ class Foo {
 fn health_warns_on_long_function() {
     let mut lines = String::from("<?php\nfunction longFunc() {\n");
     for i in 0..60 {
-        lines.push_str(&format!("    $x{i} = {i};\n"));
+        let _ = writeln!(lines, "    $x{i} = {i};");
     }
     lines.push_str("}\n");
 
@@ -69,7 +70,7 @@ fn health_warns_on_long_function() {
 
 #[test]
 fn health_for_rust_file() {
-    let source = r#"
+    let source = r"
 fn simple(x: i32) -> i32 {
     x + 1
 }
@@ -84,7 +85,7 @@ fn branchy(a: i32, b: Option<i32>) -> i32 {
         -1
     }
 }
-"#;
+";
     let report = compute_health(source, &PathBuf::from("test.rs"), "rust");
     assert_eq!(report.functions.len(), 2);
 
@@ -102,11 +103,11 @@ fn branchy(a: i32, b: Option<i32>) -> i32 {
 
 #[test]
 fn health_warns_on_many_params() {
-    let source = r#"<?php
+    let source = r"<?php
 function tooManyParams($a, $b, $c, $d, $e, $f) {
     return $a;
 }
-"#;
+";
     let report = compute_health(source, &PathBuf::from("test.php"), "php");
     assert_eq!(report.functions.len(), 1);
     assert_eq!(report.functions[0].param_count, 6);
