@@ -108,6 +108,18 @@ pub struct ExtractMigrationFactsParams {
     pub table_filter: Option<Vec<String>>,
 }
 
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct QuickReviewParams {
+    /// File paths to review. If empty, auto-detects changed files from git diff.
+    pub file_paths: Option<Vec<String>>,
+    /// Git ref to diff against (default: "HEAD")
+    pub base_ref: Option<String>,
+    /// Directories to search for callers (default: app/, routes/, src/)
+    pub search_paths: Option<Vec<String>>,
+    /// Review mode: "default" (opus), "lite" (sonnet), "auto" (haiku)
+    pub mode: Option<String>,
+}
+
 // ─── MCP Server ────────────────────────────────────────────────
 
 /// MCP server for grounded red-blue adversarial plan refinement.
@@ -798,6 +810,147 @@ impl RefineServer {
             serde_json::to_string_pretty(&output).unwrap_or_default(),
         )]))
     }
+
+    // ── Tool 9: quick_review ─────────────────────────────────────
+
+    /// Lightweight adversarial review from git diff. No plan file needed.
+    #[tool(
+        description = "Quick adversarial code review from git diff. Auto-detects changed files, \
+        extracts tree-sitter facts, finds callers (blast radius), and generates a single combined \
+        red-team prompt. Returns the prompt for a single subagent to execute. \
+        No plan file required — works on any git diff."
+    )]
+    async fn quick_review(
+        &self,
+        params: Parameters<QuickReviewParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let params = params.0;
+        let mode = parse_mode(params.mode.as_deref())?;
+        let base_ref = params.base_ref.as_deref().unwrap_or("HEAD");
+
+        // 1. Get changed files
+        let changed_files = match params.file_paths {
+            Some(ref files) if !files.is_empty() => files.clone(),
+            _ => get_changed_files(base_ref),
+        };
+
+        if changed_files.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                r#"{"error": "No changed files found. Provide file_paths or ensure git diff has changes."}"#,
+            )]));
+        }
+
+        // 2. Extract facts via tree-sitter
+        let (fact_tables, extract_errors) = match run_extraction(&changed_files, false) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::json!({
+                        "error": format!("Fact extraction failed: {}", e.message),
+                        "changed_files": changed_files,
+                    })
+                    .to_string(),
+                )]));
+            }
+        };
+
+        if fact_tables.is_empty() {
+            let mut result = serde_json::json!({
+                "error": "No facts extracted. Files may be unsupported languages or unreadable.",
+                "changed_files": changed_files,
+            });
+            if !extract_errors.is_empty() {
+                result["extract_errors"] = serde_json::json!(extract_errors);
+            }
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            )]));
+        }
+
+        // 3. Blast radius: find callers of changed functions
+        let changed_symbols = refine_mcp::facts::blast_radius::extract_changed_symbols(
+            &changed_files.iter().map(PathBuf::from).collect::<Vec<_>>(),
+        );
+
+        let default_search = vec![
+            PathBuf::from("app/"),
+            PathBuf::from("routes/"),
+            PathBuf::from("src/"),
+        ];
+        let search_paths: Vec<PathBuf> = params
+            .search_paths
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let search = if search_paths.is_empty() {
+            &default_search
+        } else {
+            &search_paths
+        };
+
+        let exclude: Vec<PathBuf> = changed_files.iter().map(PathBuf::from).collect();
+        let caller_result =
+            refine_mcp::facts::blast_radius::expand_blast_radius(&changed_symbols, search, &exclude, 10);
+        let caller_json =
+            serde_json::to_string_pretty(&caller_result).unwrap_or_else(|_| "{}".to_string());
+
+        // 4. Dispatch reasoning
+        let dispatch = refine_mcp::prompts::quick_review_dispatch(&fact_tables);
+
+        // 5. Build combined prompt
+        let prompt_result = refine_mcp::prompts::build_quick_review_prompt(
+            mode,
+            &changed_files,
+            &fact_tables,
+            &caller_json,
+            "", // no schema by default for quick review
+        );
+
+        // 6. Facts summary
+        let total_fns: usize = fact_tables.iter().map(|t| t.functions.len()).sum();
+        let total_callers: usize = caller_result
+            .call_graph
+            .values()
+            .map(|callers| callers.len())
+            .sum();
+
+        let signals: Vec<String> = dispatch
+            .reasoning
+            .iter()
+            .filter(|r| !r.contains("skipped") && !r.contains("always"))
+            .cloned()
+            .collect();
+
+        let output = serde_json::json!({
+            "prompt": prompt_result.prompt,
+            "recommended_model": prompt_result.recommended_model,
+            "facts_summary": {
+                "files_analyzed": fact_tables.len(),
+                "functions_found": total_fns,
+                "callers_found": total_callers,
+                "changed_symbols": changed_symbols,
+                "signals": signals,
+            },
+            "dispatch": {
+                "angles": dispatch.teams.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>(),
+                "reasoning": dispatch.reasoning,
+            },
+        });
+
+        if !extract_errors.is_empty() {
+            let mut o = output;
+            o["extract_warnings"] = serde_json::json!(extract_errors);
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&o).unwrap_or_default(),
+            )]));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&output).unwrap_or_default(),
+        )]))
+    }
 }
 
 #[tool_handler]
@@ -807,7 +960,8 @@ impl ServerHandler for RefineServer {
             instructions: Some(
                 "Grounded red-blue adversarial plan refinement. \
                  Uses tree-sitter to extract structured facts from source code, \
-                 then provides focused prompts for LLM red team analysis."
+                 then provides focused prompts for LLM red team analysis. \
+                 Use quick_review for lightweight daily reviews without plan files."
                     .into(),
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
@@ -1187,6 +1341,52 @@ fn git_changed_files() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Get files changed relative to a git ref.
+///
+/// Includes both staged and unstaged changes. Returns empty vec on failure.
+fn get_changed_files(base_ref: &str) -> Vec<String> {
+    // Get both staged + unstaged changes
+    let output = std::process::Command::new("git")
+        .args(["diff", "--name-only", base_ref])
+        .output();
+
+    let mut files: Vec<String> = output
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Also include staged changes not yet committed
+    if let Ok(staged) = std::process::Command::new("git")
+        .args(["diff", "--name-only", "--cached"])
+        .output()
+    {
+        if staged.status.success() {
+            for line in String::from_utf8_lossy(&staged.stdout).lines() {
+                if !line.is_empty() && !files.contains(&line.to_string()) {
+                    files.push(line.to_string());
+                }
+            }
+        }
+    }
+
+    // Filter to supported extensions
+    files.retain(|f| {
+        matches!(
+            Path::new(f).extension().and_then(|e| e.to_str()),
+            Some("php" | "rs" | "ts" | "tsx" | "js" | "jsx" | "py")
+        )
+    });
+
+    files
 }
 
 /// Get current date as YYYY-MM-DD string.

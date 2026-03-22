@@ -8,6 +8,7 @@ const TEMPLATE_RT_B: &str = include_str!("../../templates/rt_b_multi_op.md");
 const TEMPLATE_RT_C: &str = include_str!("../../templates/rt_c_data_integrity.md");
 const TEMPLATE_RT_D: &str = include_str!("../../templates/rt_d_auth_boundary.md");
 const TEMPLATE_BLUE: &str = include_str!("../../templates/blue_cross_analysis.md");
+const TEMPLATE_QUICK: &str = include_str!("../../templates/quick_review.md");
 
 // ─── Public API ────────────────────────────────────────────────
 
@@ -260,6 +261,103 @@ pub fn build_blue_team_prompt(
         recommended_model: mode.blue_model().to_string(),
     }
 }
+
+// ─── Quick Review ─────────────────────────────────────────────
+
+/// Build a single combined review prompt for quick_review.
+///
+/// Merges relevant attack angles from RT-A/B/C/D into one prompt based on
+/// fact-driven signals. Returns a single prompt that one subagent can execute.
+#[must_use]
+pub fn build_quick_review_prompt(
+    mode: RefineMode,
+    changed_files: &[String],
+    fact_tables: &[FactTable],
+    caller_facts_json: &str,
+    schema_section: &str,
+) -> RedTeamPrompt {
+    let dispatch = auto_select_red_teams(fact_tables);
+    let facts_json = serde_json::to_string_pretty(fact_tables).unwrap_or_else(|_| "[]".to_string());
+    let changed_list = changed_files
+        .iter()
+        .map(|f| format!("- `{f}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let attack_angles = build_attack_angles(&dispatch.teams);
+
+    let prompt = TEMPLATE_QUICK
+        .replace("{changed_files}", &changed_list)
+        .replace("{fact_tables}", &facts_json)
+        .replace("{caller_facts}", caller_facts_json)
+        .replace("{schema_section}", schema_section)
+        .replace("{attack_angles}", &attack_angles);
+
+    RedTeamPrompt {
+        id: RedTeamId::RtA, // use RtA as representative ID for quick review
+        prompt,
+        recommended_model: mode.red_model().to_string(),
+    }
+}
+
+/// Access the dispatch result for quick_review metadata.
+#[must_use]
+pub fn quick_review_dispatch(fact_tables: &[FactTable]) -> DispatchResult {
+    auto_select_red_teams(fact_tables)
+}
+
+/// Build attack angle sections based on selected red teams.
+fn build_attack_angles(teams: &[RedTeamId]) -> String {
+    let mut sections = Vec::new();
+
+    for team in teams {
+        match team {
+            RedTeamId::RtA => sections.push(ANGLE_A),
+            RedTeamId::RtB => sections.push(ANGLE_B),
+            RedTeamId::RtC => sections.push(ANGLE_C),
+            RedTeamId::RtD => sections.push(ANGLE_D),
+            RedTeamId::BlueTeam => {}
+        }
+    }
+
+    sections.join("\n\n")
+}
+
+const ANGLE_A: &str = "\
+### Silent Failure + Type Safety + Idempotency
+1. `catch_blocks` with `SilentSwallow` or `LogAndContinue` — what are the concrete consequences?
+2. `external_calls` with `in_transaction: true` — external API inside transaction holds locks on failure
+3. `catch_blocks` with `side_effects_before` — irreversible side effects before the catch
+4. `null_risks` — each is a potential runtime panic/TypeError
+5. `parameters` with `nullable: true` — does the caller handle null?
+6. `state_mutations` kind=Create without unique constraint — duplicate requests create duplicates
+7. Multiple `state_mutations` without `transaction` — partial success cannot roll back
+8. `callers` — if signature changed, do all callers pass correct args and handle new return type?";
+
+const ANGLE_B: &str = "\
+### Concurrency Race + TOCTOU
+1. `state_mutations` Update/Delete but `transaction` is null and `locks` empty — unprotected writes
+2. `transaction` exists but `has_lock_for_update: false` — reads without row locking
+3. Multiple functions operating on the same mutation target — who wins under concurrent calls?
+4. Function has Read then Update/Delete but no `locks` — check-then-act TOCTOU gap
+5. `external_calls` between two `state_mutations` — extends the race window
+6. `callers` — can two callers invoke concurrently with conflicting assumptions?";
+
+const ANGLE_C: &str = "\
+### Data Integrity + Schema Drift
+1. `state_mutations` Create/Update without `transaction` — multi-table writes may partially succeed
+2. `state_mutations` targets span multiple models with only some inside `transaction`
+3. `parameters` lack validation but used directly in `state_mutations` — dirty data written to DB
+4. Same model updated by different functions — may miss required fields
+5. Cross-reference `state_mutations` with schema: VARCHAR for arithmetic? NOT NULL without value? ENUM out of range?";
+
+const ANGLE_D: &str = "\
+### Permission Boundary + Access Control
+1. `state_mutations` Update/Delete but `parameters` have no user_id or permission check
+2. `parameters` have id params but no ownership validation — IDOR risk
+3. `external_calls` pass user-controllable params to external APIs — injection/SSRF
+4. Financial model mutations (Payment/Pricing/Deposit) without elevated permission checks
+5. `catch_blocks` on permission failure with action other than Rethrow — errors swallowed";
 
 // ─── Tests ─────────────────────────────────────────────────────
 
