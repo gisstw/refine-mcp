@@ -405,18 +405,14 @@ fn extract_return_paths(method_text: &str, base_line: u32) -> Vec<ReturnPathFact
     use regex::Regex;
     use std::sync::LazyLock;
 
-    static RE_RETURN: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?m)^\s*return\b(.*);\s*$").expect("valid regex")
-    });
-    static RE_THROW: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?m)^\s*throw\s+new\b").expect("valid regex")
-    });
-    static RE_ERROR_KEY: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"['"]error['"]\s*=>"#).expect("valid regex")
-    });
-    static RE_SUCCESS_FALSE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"['"]success['"]\s*=>\s*false"#).expect("valid regex")
-    });
+    static RE_RETURN: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^\s*return\b(.*);\s*$").expect("valid regex"));
+    static RE_THROW: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^\s*throw\s+new\b").expect("valid regex"));
+    static RE_ERROR_KEY: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"['"]error['"]\s*=>"#).expect("valid regex"));
+    static RE_SUCCESS_FALSE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"['"]success['"]\s*=>\s*false"#).expect("valid regex"));
 
     let mut paths = Vec::new();
 
@@ -452,7 +448,11 @@ fn extract_return_paths(method_text: &str, base_line: u32) -> Vec<ReturnPathFact
     paths
 }
 
-fn classify_return_expr(expr: &str, re_error: &regex::Regex, re_success_false: &regex::Regex) -> ReturnKind {
+fn classify_return_expr(
+    expr: &str,
+    re_error: &regex::Regex,
+    re_success_false: &regex::Regex,
+) -> ReturnKind {
     if expr.is_empty() {
         return ReturnKind::Void;
     }
@@ -474,7 +474,10 @@ fn extract_silent_skips(method_text: &str, base_line: u32) -> Vec<SilentSkipFact
 
     // Match: if ($x === null) or if (!$x) or if (is_null($x)) or if ($x == null)
     static RE_NULL_CHECK: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?m)^\s*if\s*\(\s*(?:!\s*(\$\w+)|(\$\w+)\s*===?\s*null|is_null\((\$\w+)\))\s*\)").expect("valid regex")
+        Regex::new(
+            r"(?m)^\s*if\s*\(\s*(?:!\s*(\$\w+)|(\$\w+)\s*===?\s*null|is_null\((\$\w+)\))\s*\)",
+        )
+        .expect("valid regex")
     });
 
     let lines: Vec<&str> = method_text.lines().collect();
@@ -482,7 +485,8 @@ fn extract_silent_skips(method_text: &str, base_line: u32) -> Vec<SilentSkipFact
 
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = RE_NULL_CHECK.captures(line) {
-            let check_var = cap.get(1)
+            let check_var = cap
+                .get(1)
                 .or(cap.get(2))
                 .or(cap.get(3))
                 .map_or("", |m| m.as_str());
@@ -566,7 +570,10 @@ fn generate_warnings(functions: &[FunctionFact], warnings: &mut Vec<String>) {
             ));
         }
         // Mixed return paths: function returns both error arrays and values
-        let has_error = f.return_paths.iter().any(|r| r.kind == ReturnKind::ErrorArray);
+        let has_error = f
+            .return_paths
+            .iter()
+            .any(|r| r.kind == ReturnKind::ErrorArray);
         let has_value = f.return_paths.iter().any(|r| r.kind == ReturnKind::Value);
         let has_null = f.return_paths.iter().any(|r| r.kind == ReturnKind::Null);
         if has_error && has_value {

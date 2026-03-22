@@ -891,8 +891,12 @@ impl RefineServer {
         };
 
         let exclude: Vec<PathBuf> = changed_files.iter().map(PathBuf::from).collect();
-        let caller_result =
-            refine_mcp::facts::blast_radius::expand_blast_radius(&changed_symbols, search, &exclude, 10);
+        let caller_result = refine_mcp::facts::blast_radius::expand_blast_radius(
+            &changed_symbols,
+            search,
+            &exclude,
+            10,
+        );
         let caller_json =
             serde_json::to_string_pretty(&caller_result).unwrap_or_else(|_| "{}".to_string());
 
@@ -910,11 +914,7 @@ impl RefineServer {
 
         // 6. Facts summary
         let total_fns: usize = fact_tables.iter().map(|t| t.functions.len()).sum();
-        let total_callers: usize = caller_result
-            .call_graph
-            .values()
-            .map(|callers| callers.len())
-            .sum();
+        let total_callers: usize = caller_result.call_graph.values().map(Vec::len).sum();
 
         let signals: Vec<String> = dispatch
             .reasoning

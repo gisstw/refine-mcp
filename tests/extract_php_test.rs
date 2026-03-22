@@ -155,16 +155,31 @@ fn detects_return_paths() {
         !cancel.return_paths.is_empty(),
         "cancelAndRefund should have return paths"
     );
-    let has_value = cancel.return_paths.iter().any(|r| r.kind == ReturnKind::Value);
-    let has_null = cancel.return_paths.iter().any(|r| r.kind == ReturnKind::Null);
+    let has_value = cancel
+        .return_paths
+        .iter()
+        .any(|r| r.kind == ReturnKind::Value);
+    let has_null = cancel
+        .return_paths
+        .iter()
+        .any(|r| r.kind == ReturnKind::Null);
     assert!(has_value, "should detect 'return true' as Value");
     assert!(has_null, "should detect 'return false' as Null");
 
     // modifyReservation: return false (Null) + return $reservation (Value) → mixed
     let modify = &table.functions[2];
-    let has_value = modify.return_paths.iter().any(|r| r.kind == ReturnKind::Value);
-    let has_null = modify.return_paths.iter().any(|r| r.kind == ReturnKind::Null);
-    assert!(has_value && has_null, "modifyReservation should have mixed return paths");
+    let has_value = modify
+        .return_paths
+        .iter()
+        .any(|r| r.kind == ReturnKind::Value);
+    let has_null = modify
+        .return_paths
+        .iter()
+        .any(|r| r.kind == ReturnKind::Null);
+    assert!(
+        has_value && has_null,
+        "modifyReservation should have mixed return paths"
+    );
 }
 
 #[test]

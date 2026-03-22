@@ -264,7 +264,7 @@ pub fn build_blue_team_prompt(
 
 // ─── Quick Review ─────────────────────────────────────────────
 
-/// Build a single combined review prompt for quick_review.
+/// Build a single combined review prompt for `quick_review`.
 ///
 /// Merges relevant attack angles from RT-A/B/C/D into one prompt based on
 /// fact-driven signals. Returns a single prompt that one subagent can execute.
@@ -300,7 +300,7 @@ pub fn build_quick_review_prompt(
     }
 }
 
-/// Access the dispatch result for quick_review metadata.
+/// Access the dispatch result for `quick_review` metadata.
 #[must_use]
 pub fn quick_review_dispatch(fact_tables: &[FactTable]) -> DispatchResult {
     auto_select_red_teams(fact_tables)
