@@ -77,6 +77,20 @@ pub struct Finding {
     /// Set by `dedup::dedup_findings()` — do not set manually at construction.
     #[serde(default)]
     pub impact_score: u32,
+    /// AST `content_hash` covering the function this finding lives in. Set by
+    /// `RefineState::merge_findings` from the run's current fingerprint map.
+    /// Drives auto-mark-as-fixed across runs (§2.1).
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    /// Symbol path for the same enclosing function, mirrored from the
+    /// fingerprint entry for human-readable diagnostics.
+    #[serde(default)]
+    pub symbol_path: Option<String>,
+    /// Why a finding's status was changed automatically (e.g. "fingerprint
+    /// not found in latest run"). Empty when the user set the status
+    /// manually.
+    #[serde(default)]
+    pub auto_marked: Option<String>,
 }
 
 impl Finding {
@@ -96,6 +110,9 @@ impl Finding {
             affected_plan_steps: Vec::new(),
             status: FindingStatus::New,
             impact_score: 0,
+            fingerprint: None,
+            symbol_path: None,
+            auto_marked: None,
         }
     }
 }

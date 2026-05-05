@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
+use crate::facts::types::FingerprintEntry;
 use crate::types::{Finding, FindingStatus};
 
 /// Persistent state across refine runs.
@@ -10,7 +12,20 @@ pub struct RefineState {
     pub findings: Vec<Finding>,
     pub run_count: u32,
     pub last_run: Option<String>,
+    /// Tracks how many times this state has been processed by a
+    /// fingerprint-aware merge. Auto-mark-as-fixed only kicks in once
+    /// `schema_version >= 2`, giving a one-run grace period after
+    /// upgrade so legacy findings get backfilled with fingerprints
+    /// before being eligible for automatic resolution. See plan §2.1
+    /// "Tier 2 補強 — 首次保護期".
+    #[serde(default)]
+    pub schema_version: u8,
 }
+
+/// Map a finding's source file to all known fingerprint entries in that file.
+/// This is the shape `merge_findings` consumes; build it from the run's
+/// `FactTable` outputs.
+pub type FingerprintMap = HashMap<PathBuf, Vec<FingerprintEntry>>;
 
 impl RefineState {
     /// Load state from the default location relative to a plan path.
@@ -59,19 +74,51 @@ impl RefineState {
 
     /// Merge new findings from a refine run with existing state.
     ///
-    /// - New findings are added
-    /// - Existing findings with matching `(file_path, line_range)` are updated
-    /// - Findings marked `Fixed` or `FalsePositive` are preserved but excluded from active set
-    pub fn merge_findings(&mut self, new_findings: Vec<Finding>) {
+    /// - New findings are added (with fingerprint backfilled from
+    ///   `current_fingerprints` when an enclosing entry exists).
+    /// - Existing findings with matching `(file_path, line_range, title)` are
+    ///   updated.
+    /// - Findings marked `Fixed` or `FalsePositive` are preserved.
+    /// - Auto-mark-as-fixed: existing `New` findings whose stored
+    ///   `fingerprint` no longer appears in `current_fingerprints` get
+    ///   flipped to `Fixed`, but only once `schema_version >= 2` and the map
+    ///   is non-empty — see "Tier 2 補強 — 首次保護期" in plan §2.1.
+    pub fn merge_findings(
+        &mut self,
+        new_findings: Vec<Finding>,
+        current_fingerprints: &FingerprintMap,
+    ) {
+        let auto_mark_enabled =
+            self.schema_version >= 2 && !current_fingerprints.is_empty();
+
+        if auto_mark_enabled {
+            for existing in &mut self.findings {
+                if existing.status != FindingStatus::New {
+                    continue;
+                }
+                let Some(fp) = existing.fingerprint.as_deref() else {
+                    continue;
+                };
+                let still_present = current_fingerprints
+                    .get(&existing.file_path)
+                    .is_some_and(|entries| entries.iter().any(|e| e.content_hash == fp));
+                if !still_present {
+                    existing.status = FindingStatus::Fixed;
+                    existing.auto_marked =
+                        Some("fingerprint not found in latest run".to_string());
+                }
+            }
+        }
+
         for new in new_findings {
-            let existing = self.findings.iter_mut().find(|f| {
+            let existing_idx = self.findings.iter().position(|f| {
                 f.file_path == new.file_path
                     && f.line_range == new.line_range
                     && f.title == new.title
             });
 
-            if let Some(existing) = existing {
-                // Don't overwrite user-set statuses
+            if let Some(idx) = existing_idx {
+                let existing = &mut self.findings[idx];
                 if existing.status == FindingStatus::New {
                     existing.severity = new.severity;
                     existing.problem.clone_from(&new.problem);
@@ -79,7 +126,19 @@ impl RefineState {
                     existing.suggested_fix.clone_from(&new.suggested_fix);
                     existing.impact_score = new.impact_score;
 
-                    // Merge sources
+                    // Backfill fingerprint/symbol on legacy findings (v0)
+                    // the first time we have data to do so.
+                    if existing.fingerprint.is_none() {
+                        if let Some(entry) = enclosing_entry(
+                            current_fingerprints,
+                            &existing.file_path,
+                            existing.line_range,
+                        ) {
+                            existing.fingerprint = Some(entry.content_hash.clone());
+                            existing.symbol_path = Some(entry.symbol_path.clone());
+                        }
+                    }
+
                     for src in &new.sources {
                         if !existing.sources.contains(src) {
                             existing.sources.push(*src);
@@ -87,10 +146,21 @@ impl RefineState {
                     }
                 }
             } else {
-                self.findings.push(new);
+                let mut to_insert = new;
+                if let Some(entry) = enclosing_entry(
+                    current_fingerprints,
+                    &to_insert.file_path,
+                    to_insert.line_range,
+                ) {
+                    to_insert.fingerprint = Some(entry.content_hash.clone());
+                    to_insert.symbol_path = Some(entry.symbol_path.clone());
+                }
+                self.findings.push(to_insert);
             }
         }
+
         self.run_count += 1;
+        self.schema_version = self.schema_version.saturating_add(1).min(2);
     }
 
     /// Get active findings (excluding Fixed and `FalsePositive`).
@@ -106,6 +176,22 @@ impl RefineState {
             })
             .collect()
     }
+}
+
+/// Find the fingerprint entry whose `line_range` encloses the finding's
+/// reported range. Findings often span just a few lines inside a function,
+/// so we don't require strict equality — just containment.
+fn enclosing_entry<'a>(
+    map: &'a FingerprintMap,
+    file: &Path,
+    finding_range: Option<(u32, u32)>,
+) -> Option<&'a FingerprintEntry> {
+    let (find_start, find_end) = finding_range?;
+    let entries = map.get(file)?;
+    entries.iter().find(|e| {
+        let (es, ee) = e.line_range;
+        es <= find_start && find_end <= ee
+    })
 }
 
 /// Derive state file path from plan path.
@@ -158,6 +244,9 @@ mod tests {
             affected_plan_steps: Vec::new(),
             status: FindingStatus::New,
             impact_score: 100,
+            fingerprint: None,
+            symbol_path: None,
+            auto_marked: None,
         }
     }
 
@@ -165,7 +254,7 @@ mod tests {
     fn merge_adds_new_findings() {
         let mut state = RefineState::default();
         let findings = vec![make_finding("F1", "a.php", "issue A")];
-        state.merge_findings(findings);
+        state.merge_findings(findings, &FingerprintMap::new());
         assert_eq!(state.findings.len(), 1);
         assert_eq!(state.run_count, 1);
     }
@@ -173,13 +262,13 @@ mod tests {
     #[test]
     fn merge_updates_existing_new_findings() {
         let mut state = RefineState::default();
-        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")]);
+        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")], &FingerprintMap::new());
 
         // Second run with same finding but updated
         let mut updated = make_finding("F1-new", "a.php", "issue A");
         updated.severity = Severity::High;
         updated.sources = vec![RedTeamId::RtB];
-        state.merge_findings(vec![updated]);
+        state.merge_findings(vec![updated], &FingerprintMap::new());
 
         assert_eq!(state.findings.len(), 1);
         assert_eq!(state.findings[0].severity, Severity::High);
@@ -190,14 +279,14 @@ mod tests {
     #[test]
     fn merge_preserves_fixed_status() {
         let mut state = RefineState::default();
-        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")]);
+        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")], &FingerprintMap::new());
 
         // Mark as fixed
         state.findings[0].status = FindingStatus::Fixed;
 
         // New run with same finding
         let updated = make_finding("F1-new", "a.php", "issue A");
-        state.merge_findings(vec![updated]);
+        state.merge_findings(vec![updated], &FingerprintMap::new());
 
         // Should NOT overwrite fixed status
         assert_eq!(state.findings[0].status, FindingStatus::Fixed);
@@ -210,7 +299,7 @@ mod tests {
         state.merge_findings(vec![
             make_finding("F1", "a.php", "issue A"),
             make_finding("F2", "b.php", "issue B"),
-        ]);
+        ], &FingerprintMap::new());
 
         state.findings[0].status = FindingStatus::Fixed;
 
@@ -222,7 +311,7 @@ mod tests {
     #[test]
     fn roundtrip_json() {
         let mut state = RefineState::default();
-        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")]);
+        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")], &FingerprintMap::new());
         state.last_run = Some("2026-02-27".to_string());
 
         let json = serde_json::to_string(&state).unwrap();
@@ -254,7 +343,7 @@ mod tests {
     fn save_to_atomic_roundtrip() {
         let tmp = std::env::temp_dir().join("refine_test_atomic.json");
         let mut state = RefineState::default();
-        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")]);
+        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")], &FingerprintMap::new());
         state.save_to(&tmp).unwrap();
 
         let loaded = RefineState::load_from(&tmp).unwrap();
@@ -286,5 +375,122 @@ mod tests {
             path,
             PathBuf::from("/tmp/my-project/refine-state-plan.json")
         );
+    }
+
+    fn fp_map(file: &str, entries: Vec<(&str, (u32, u32), &str)>) -> FingerprintMap {
+        let mut m = FingerprintMap::new();
+        m.insert(
+            PathBuf::from(file),
+            entries
+                .into_iter()
+                .map(|(sym, range, hash)| FingerprintEntry {
+                    line_range: range,
+                    symbol_path: sym.to_string(),
+                    content_hash: hash.to_string(),
+                })
+                .collect(),
+        );
+        m
+    }
+
+    #[test]
+    fn schema_version_starts_at_zero_and_bumps_to_two() {
+        let mut state = RefineState::default();
+        assert_eq!(state.schema_version, 0);
+        state.merge_findings(vec![], &FingerprintMap::new());
+        assert_eq!(state.schema_version, 1, "first run goes from 0 to 1");
+        state.merge_findings(vec![], &FingerprintMap::new());
+        assert_eq!(state.schema_version, 2, "second run reaches 2");
+        state.merge_findings(vec![], &FingerprintMap::new());
+        assert_eq!(state.schema_version, 2, "saturates at 2");
+    }
+
+    #[test]
+    fn first_run_does_not_auto_mark_legacy_findings() {
+        // Tier 2 §0.5 / RT-A2: legacy v0 state has no fingerprints; first
+        // post-upgrade run must not interpret missing fingerprints as
+        // "fixed". We simulate by injecting a finding with a fingerprint
+        // that won't be in the map, but on a fresh state (schema_version=0).
+        let mut state = RefineState::default();
+        let mut f = make_finding("F1", "a.php", "issue A");
+        f.fingerprint = Some("abc".to_string());
+        state.findings.push(f);
+
+        // First merge, current run computed nothing yet (empty map):
+        state.merge_findings(vec![], &FingerprintMap::new());
+        assert_eq!(
+            state.findings[0].status,
+            FindingStatus::New,
+            "schema v0 → v1 must not auto-mark"
+        );
+
+        // Second merge with a non-empty map that does NOT contain the
+        // finding's fingerprint — still must not auto-mark, schema is at 1
+        // (one-run grace period). Use a different file so even the
+        // is_empty() guard would let us through.
+        let map = fp_map("a.php", vec![("foo", (10, 20), "different-hash")]);
+        state.merge_findings(vec![], &map);
+        assert_eq!(
+            state.findings[0].status,
+            FindingStatus::New,
+            "schema v1 → v2 still in grace period"
+        );
+
+        // Third merge, schema_version is now 2 → auto-mark engages.
+        state.merge_findings(vec![], &map);
+        assert_eq!(
+            state.findings[0].status,
+            FindingStatus::Fixed,
+            "schema v2 with non-empty map auto-marks"
+        );
+        assert!(state.findings[0].auto_marked.is_some());
+    }
+
+    #[test]
+    fn empty_fingerprint_map_never_auto_marks_even_at_v2() {
+        // Even if schema_version is at 2, an empty map must not trigger
+        // auto-mark — extract_facts may have failed and we don't want to
+        // resolve everything by mistake.
+        let mut state = RefineState {
+            schema_version: 2,
+            ..RefineState::default()
+        };
+        let mut f = make_finding("F1", "a.php", "issue A");
+        f.fingerprint = Some("abc".to_string());
+        state.findings.push(f);
+
+        state.merge_findings(vec![], &FingerprintMap::new());
+        assert_eq!(state.findings[0].status, FindingStatus::New);
+    }
+
+    #[test]
+    fn fingerprint_still_present_keeps_finding_new() {
+        let mut state = RefineState {
+            schema_version: 2,
+            ..RefineState::default()
+        };
+        let mut f = make_finding("F1", "a.php", "issue A");
+        f.fingerprint = Some("abc".to_string());
+        state.findings.push(f);
+
+        let map = fp_map("a.php", vec![("foo", (5, 25), "abc")]);
+        state.merge_findings(vec![], &map);
+        assert_eq!(state.findings[0].status, FindingStatus::New);
+    }
+
+    #[test]
+    fn new_findings_get_fingerprint_backfilled() {
+        // Inserting a new finding inside a tracked function should pick up
+        // the enclosing entry's fingerprint and symbol_path.
+        let mut state = RefineState::default();
+        let map = fp_map("a.php", vec![("doWork", (5, 30), "deadbeef")]);
+
+        state.merge_findings(
+            vec![make_finding("F1", "a.php", "issue A")], // line_range = (10,20) ⊂ (5,30)
+            &map,
+        );
+
+        assert_eq!(state.findings[0].fingerprint.as_deref(), Some("deadbeef"));
+        assert_eq!(state.findings[0].symbol_path.as_deref(), Some("doWork"));
     }
 }

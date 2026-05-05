@@ -62,6 +62,12 @@ pub struct SynthesizeFindingsParams {
     pub plan_summary: Option<String>,
     /// Refine mode for blue team model selection
     pub mode: Option<String>,
+    /// JSON-encoded `Vec<FactTable>` from this run's `extract_facts` call.
+    /// When present, fingerprints are extracted and used to backfill new
+    /// findings and auto-mark stale ones (§2.1). When absent, behavior
+    /// degrades to the pre-§2.1 merge logic — no auto-mark, just status
+    /// preservation.
+    pub fact_tables_json: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -673,7 +679,11 @@ impl RefineServer {
             }),
             None => RefineState::default(),
         };
-        state.merge_findings(deduped.clone());
+        let fingerprints = build_fingerprint_map(
+            params.0.fact_tables_json.as_deref(),
+            &mut parse_errors,
+        );
+        state.merge_findings(deduped.clone(), &fingerprints);
         state.last_run = Some(date_today());
 
         // Use active findings (excludes Fixed/FalsePositive) for blue prompt
@@ -1402,6 +1412,39 @@ fn get_changed_files(base_ref: &str) -> Vec<String> {
     files
 }
 
+/// Build a `FingerprintMap` from a JSON-encoded `Vec<FactTable>` payload.
+/// Parse errors are pushed into `warnings` so the caller surfaces them
+/// alongside other synthesize warnings — never silently dropped (§3.2).
+fn build_fingerprint_map(
+    fact_tables_json: Option<&str>,
+    warnings: &mut Vec<String>,
+) -> refine_mcp::state::FingerprintMap {
+    let Some(raw) = fact_tables_json else {
+        return refine_mcp::state::FingerprintMap::new();
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return refine_mcp::state::FingerprintMap::new();
+    }
+    match serde_json::from_str::<Vec<refine_mcp::facts::types::FactTable>>(trimmed) {
+        Ok(tables) => {
+            let mut map = refine_mcp::state::FingerprintMap::new();
+            for t in tables {
+                if !t.fingerprints.is_empty() {
+                    map.insert(t.file, t.fingerprints);
+                }
+            }
+            map
+        }
+        Err(e) => {
+            warnings.push(format!(
+                "fact_tables_json parse warning: {e} — auto-mark disabled for this run"
+            ));
+            refine_mcp::state::FingerprintMap::new()
+        }
+    }
+}
+
 /// Best-effort append to ~/.cache/refine-mcp/format-issues.log.
 /// Silently ignores all errors — logging must not break tool execution.
 fn log_format_issue(kind: &str, ext: &str, file_path: &str, detail: &str) {
@@ -1521,6 +1564,9 @@ mod tests {
             affected_plan_steps: Vec::new(),
             status: FindingStatus::New,
             impact_score: 100,
+            fingerprint: None,
+            symbol_path: None,
+            auto_marked: None,
         }
     }
 

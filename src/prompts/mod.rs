@@ -441,6 +441,9 @@ mod tests {
             affected_plan_steps: Vec::new(),
             status: crate::types::FindingStatus::New,
             impact_score: 100,
+            fingerprint: None,
+            symbol_path: None,
+            auto_marked: None,
         }];
 
         let prompt = build_blue_team_prompt(RefineMode::Default, &findings, "Plan summary");

@@ -24,6 +24,9 @@ fn make_finding(
         affected_plan_steps: Vec::new(),
         status: FindingStatus::New,
         impact_score: 0,
+        fingerprint: None,
+        symbol_path: None,
+        auto_marked: None,
     }
 }
 
