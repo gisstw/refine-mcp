@@ -15,6 +15,43 @@ pub struct FactTable {
     /// Callers of functions in this file, populated by `expand_blast_radius`
     #[serde(default)]
     pub callers: Vec<CallerFact>,
+    /// How the facts were obtained — surfaced to red team prompts so they can
+    /// adjust scrutiny based on extraction precision (e.g. textual fallback).
+    /// Set by `facts::registry::extract_for_path`.
+    #[serde(default)]
+    pub extract_method: ExtractMethod,
+    /// AST fingerprints keyed by line range. Populated by §2.1 to support
+    /// cross-run auto-fix marking. Empty for now; serde default keeps the
+    /// schema backward compatible with v0 state files.
+    #[serde(default)]
+    pub fingerprints: Vec<FingerprintEntry>,
+}
+
+/// How a `FactTable` was produced. Currently only `TreeSitter`; reserved
+/// variants (`Textual`, `BladePreproc`, `Json`) land with §2.3 / §2.5 / §4.4.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractMethod {
+    #[default]
+    TreeSitter,
+}
+
+/// Identifies a single function (or other addressable unit) for cross-run
+/// matching. `content_hash` covers the function body plus a small number of
+/// surrounding lines so that incidental whitespace shifts do not invalidate
+/// the fingerprint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FingerprintEntry {
+    pub line_range: (u32, u32),
+    /// Fully qualified symbol path, e.g. `CartService::charge` (PHP),
+    /// `module::Service::method` (Rust). Distinguishes same-named functions
+    /// across files / classes.
+    pub symbol_path: String,
+    /// SHA-256 of the normalized function body with ±3 lines of surrounding
+    /// context. Computed in §2.1.
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -282,6 +319,8 @@ mod tests {
             }],
             warnings: vec![],
             callers: vec![],
+            extract_method: ExtractMethod::default(),
+            fingerprints: vec![],
         }
     }
 
@@ -391,9 +430,28 @@ mod tests {
                 caller_line: 10,
                 context: "->test()".to_string(),
             }],
+            extract_method: ExtractMethod::default(),
+            fingerprints: vec![],
         };
         let json = serde_json::to_string(&table).expect("serialize");
         let restored: FactTable = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored.callers.len(), 1);
+    }
+
+    /// V0 fact tables (before §1.2) didn't carry `extract_method` or
+    /// `fingerprints`. Deserialization must still succeed and fall back to the
+    /// schema defaults — the next run repopulates the missing data.
+    #[test]
+    fn fact_table_v0_json_round_trips() {
+        let v0_json = r#"{
+            "file": "src/foo.rs",
+            "language": "rust",
+            "functions": [],
+            "warnings": [],
+            "callers": []
+        }"#;
+        let restored: FactTable = serde_json::from_str(v0_json).expect("v0 JSON must deserialize");
+        assert_eq!(restored.extract_method, ExtractMethod::TreeSitter);
+        assert!(restored.fingerprints.is_empty());
     }
 }

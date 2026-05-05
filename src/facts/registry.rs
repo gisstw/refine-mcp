@@ -6,19 +6,10 @@
 
 use std::path::Path;
 
-use crate::facts::types::FactTable;
+use crate::facts::types::{ExtractMethod, FactTable};
 
-/// How the facts were obtained — surfaced to red team prompts so they can
-/// adjust scrutiny based on extraction precision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExtractMethod {
-    /// Full tree-sitter analysis with structured fact extraction.
-    #[default]
-    TreeSitter,
-}
-
-/// Successful extraction result paired with the method used.
+/// Successful extraction result. The `method` mirrors `facts.extract_method`
+/// for callers that haven't deserialized the table yet.
 #[derive(Debug)]
 pub struct ExtractResult {
     pub facts: FactTable,
@@ -91,9 +82,12 @@ pub fn extract_for_path(path: &Path, source: &str) -> Result<ExtractResult, Extr
     };
 
     facts
-        .map(|t| ExtractResult {
-            facts: t,
-            method: ExtractMethod::TreeSitter,
+        .map(|mut t| {
+            t.extract_method = ExtractMethod::TreeSitter;
+            ExtractResult {
+                facts: t,
+                method: ExtractMethod::TreeSitter,
+            }
         })
         .map_err(|source| ExtractError::Parse {
             ext: ext.to_string(),

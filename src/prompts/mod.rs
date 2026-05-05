@@ -366,7 +366,7 @@ const ANGLE_D: &str = "\
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facts::types::{FunctionFact, Language};
+    use crate::facts::types::{ExtractMethod, FunctionFact, Language};
     use std::path::PathBuf;
 
     fn sample_fact_table() -> FactTable {
@@ -389,6 +389,8 @@ mod tests {
             }],
             warnings: vec!["process: 2 SQL mutations without transaction".to_string()],
             callers: vec![],
+            extract_method: ExtractMethod::default(),
+            fingerprints: vec![],
         }
     }
 
@@ -511,6 +513,8 @@ mod tests {
             }],
             warnings: vec![],
             callers: vec![],
+            extract_method: ExtractMethod::default(),
+            fingerprints: vec![],
         }];
         let dispatch = auto_select_red_teams(&facts);
         assert!(
@@ -539,6 +543,8 @@ mod tests {
             functions: vec![],
             warnings: vec![],
             callers: vec![],
+            extract_method: ExtractMethod::default(),
+            fingerprints: vec![],
         }];
         let dispatch = auto_select_red_teams(&facts);
         assert!(
@@ -582,6 +588,8 @@ mod tests {
             }],
             warnings: vec![],
             callers: vec![],
+            extract_method: ExtractMethod::default(),
+            fingerprints: vec![],
         }];
         let dispatch = auto_select_red_teams(&facts);
         assert!(
@@ -636,6 +644,8 @@ mod tests {
             }],
             warnings: vec![],
             callers: vec![],
+            extract_method: ExtractMethod::default(),
+            fingerprints: vec![],
         }];
         let dispatch = auto_select_red_teams(&facts);
         assert_eq!(

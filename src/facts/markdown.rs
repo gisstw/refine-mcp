@@ -3,8 +3,8 @@ use std::path::Path;
 use anyhow::Result;
 
 use super::types::{
-    CatchFact, ExternalCallFact, FactTable, FunctionFact, Language, LockFact, MutationFact,
-    NullRiskFact, ParamFact, ReturnPathFact, SilentSkipFact,
+    CatchFact, ExternalCallFact, ExtractMethod, FactTable, FunctionFact, Language, LockFact,
+    MutationFact, NullRiskFact, ParamFact, ReturnPathFact, SilentSkipFact,
 };
 
 /// Extract structure from a Markdown file.
@@ -96,5 +96,7 @@ pub fn extract_markdown_facts(path: &Path, source: &str) -> Result<FactTable> {
         functions,
         warnings: section_bodies,
         callers: Vec::new(),
+        extract_method: ExtractMethod::default(),
+        fingerprints: Vec::new(),
     })
 }

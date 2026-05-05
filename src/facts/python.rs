@@ -5,8 +5,8 @@ use regex::Regex;
 use tree_sitter::Parser;
 
 use super::types::{
-    CatchAction, CatchFact, ExternalCallFact, FactTable, FunctionFact, Language, LockFact,
-    LockKind, MutationFact, MutationKind, NullRiskFact, ParamFact, TransactionFact,
+    CatchAction, CatchFact, ExternalCallFact, ExtractMethod, FactTable, FunctionFact, Language,
+    LockFact, LockKind, MutationFact, MutationKind, NullRiskFact, ParamFact, TransactionFact,
 };
 
 // ─── Pre-compiled Regexes ──────────────────────────────────────
@@ -73,6 +73,8 @@ pub fn extract_python_facts(path: &Path, source: &str) -> anyhow::Result<FactTab
         functions,
         warnings,
         callers: vec![],
+        extract_method: ExtractMethod::default(),
+        fingerprints: vec![],
     })
 }
 
