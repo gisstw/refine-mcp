@@ -835,6 +835,12 @@ impl RefineServer {
         };
 
         if changed_files.is_empty() {
+            tracing::warn!(
+                base_ref = base_ref,
+                file_paths = ?params.file_paths,
+                "quick_review early-exit: no changed files (git diff against {} returned empty; commit may have already happened or file_paths not given)",
+                base_ref
+            );
             return Ok(CallToolResult::success(vec![Content::text(
                 r#"{"error": "No changed files found. Provide file_paths or ensure git diff has changes."}"#,
             )]));
@@ -844,6 +850,11 @@ impl RefineServer {
         let (fact_tables, extract_errors) = match run_extraction(&changed_files, false) {
             Ok(result) => result,
             Err(e) => {
+                tracing::warn!(
+                    changed_files = ?changed_files,
+                    error = %e.message,
+                    "quick_review early-exit: fact extraction failed"
+                );
                 return Ok(CallToolResult::success(vec![Content::text(
                     serde_json::json!({
                         "error": format!("Fact extraction failed: {}", e.message),
@@ -855,6 +866,11 @@ impl RefineServer {
         };
 
         if fact_tables.is_empty() {
+            tracing::warn!(
+                changed_files = ?changed_files,
+                extract_errors = ?extract_errors,
+                "quick_review early-exit: no facts extracted (unsupported languages or parse errors)"
+            );
             let mut result = serde_json::json!({
                 "error": "No facts extracted. Files may be unsupported languages or unreadable.",
                 "changed_files": changed_files,
