@@ -1303,32 +1303,22 @@ fn run_extraction(
             }
         };
 
-        let result = match path.extension().and_then(|e| e.to_str()) {
-            Some("php") => refine_mcp::facts::php::extract_php_facts(&path, &source),
-            Some("rs") => refine_mcp::facts::rust_lang::extract_rust_facts(&path, &source),
-            Some("ts" | "tsx" | "js" | "jsx") => {
-                refine_mcp::facts::typescript::extract_ts_facts(&path, &source)
-            }
-            Some("py") => refine_mcp::facts::python::extract_python_facts(&path, &source),
-            Some("md") => refine_mcp::facts::markdown::extract_markdown_facts(&path, &source),
-            Some(ext) => {
-                log_format_issue("unsupported", ext, file_path_str, "");
-                errors.push(format!("Unsupported language: .{ext} ({file_path_str})"));
-                continue;
-            }
-            None => {
-                log_format_issue("no_extension", "", file_path_str, "");
-                errors.push(format!("No file extension: {file_path_str}"));
-                continue;
-            }
-        };
-
-        match result {
-            Ok(table) => tables.push(table),
-            Err(e) => {
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                log_format_issue("parse_error", ext, file_path_str, &e.to_string());
-                errors.push(format!("Parse error for {file_path_str}: {e}"));
+        match refine_mcp::facts::registry::extract_for_path(&path, &source) {
+            Ok(result) => tables.push(result.facts),
+            Err(err) => {
+                log_format_issue(err.kind(), err.ext(), file_path_str, &err.to_string());
+                let user_msg = match &err {
+                    refine_mcp::facts::registry::ExtractError::Unsupported { ext } => {
+                        format!("Unsupported language: .{ext} ({file_path_str})")
+                    }
+                    refine_mcp::facts::registry::ExtractError::NoExtension => {
+                        format!("No file extension: {file_path_str}")
+                    }
+                    refine_mcp::facts::registry::ExtractError::Parse { source, .. } => {
+                        format!("Parse error for {file_path_str}: {source}")
+                    }
+                };
+                errors.push(user_msg);
             }
         }
     }
