@@ -1,4 +1,5 @@
 pub mod blast_radius;
+pub mod markdown;
 pub mod migration;
 pub mod php;
 pub mod python;

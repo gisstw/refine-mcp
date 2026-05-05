@@ -1310,11 +1310,14 @@ fn run_extraction(
                 refine_mcp::facts::typescript::extract_ts_facts(&path, &source)
             }
             Some("py") => refine_mcp::facts::python::extract_python_facts(&path, &source),
+            Some("md") => refine_mcp::facts::markdown::extract_markdown_facts(&path, &source),
             Some(ext) => {
+                log_format_issue("unsupported", ext, file_path_str, "");
                 errors.push(format!("Unsupported language: .{ext} ({file_path_str})"));
                 continue;
             }
             None => {
+                log_format_issue("no_extension", "", file_path_str, "");
                 errors.push(format!("No file extension: {file_path_str}"));
                 continue;
             }
@@ -1322,7 +1325,11 @@ fn run_extraction(
 
         match result {
             Ok(table) => tables.push(table),
-            Err(e) => errors.push(format!("Parse error for {file_path_str}: {e}")),
+            Err(e) => {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                log_format_issue("parse_error", ext, file_path_str, &e.to_string());
+                errors.push(format!("Parse error for {file_path_str}: {e}"));
+            }
         }
     }
 
@@ -1403,6 +1410,26 @@ fn get_changed_files(base_ref: &str) -> Vec<String> {
     });
 
     files
+}
+
+/// Best-effort append to ~/.cache/refine-mcp/format-issues.log.
+/// Silently ignores all errors — logging must not break tool execution.
+fn log_format_issue(kind: &str, ext: &str, file_path: &str, detail: &str) {
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let dir = PathBuf::from(home).join(".cache/refine-mcp");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("format-issues.log");
+    let now = time::OffsetDateTime::now_utc();
+    let ts = format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        now.year(), now.month() as u8, now.day(),
+        now.hour(), now.minute(), now.second()
+    );
+    let line = format!("{ts}\t{kind}\t.{ext}\t{file_path}\t{detail}\n");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = f.write_all(line.as_bytes());
+    }
 }
 
 /// Get current date as YYYY-MM-DD string.

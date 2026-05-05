@@ -25,6 +25,7 @@ pub enum Language {
     Rust,
     TypeScript,
     Python,
+    Markdown,
 }
 
 /// Facts about a single function/method.
