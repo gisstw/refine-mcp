@@ -84,6 +84,7 @@ pub fn extract_for_path(path: &Path, source: &str) -> Result<ExtractResult, Extr
     facts
         .map(|mut t| {
             t.extract_method = ExtractMethod::TreeSitter;
+            t.fingerprints = crate::fingerprint::compute_for_table(&t, source);
             ExtractResult {
                 facts: t,
                 method: ExtractMethod::TreeSitter,
