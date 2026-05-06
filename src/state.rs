@@ -479,6 +479,39 @@ mod tests {
     }
 
     #[test]
+    fn manual_status_update_persists_through_save_load() {
+        // Simulates what the mark_finding MCP tool does: load → mutate
+        // by id → save → reload, status survives the round trip.
+        let tmp = std::env::temp_dir().join("refine_test_mark_finding.json");
+        let _ = std::fs::remove_file(&tmp);
+
+        let mut state = RefineState::default();
+        state.merge_findings(
+            vec![make_finding("F1", "a.php", "issue A")],
+            &FingerprintMap::new(),
+        );
+        state.save_to(&tmp).unwrap();
+
+        let mut loaded = RefineState::load_from(&tmp).unwrap();
+        let target = loaded
+            .findings
+            .iter_mut()
+            .find(|f| f.id == "F1")
+            .expect("finding present");
+        target.status = FindingStatus::FalsePositive;
+        target.auto_marked = Some("not exploitable in this context".to_string());
+        loaded.save_to(&tmp).unwrap();
+
+        let reloaded = RefineState::load_from(&tmp).unwrap();
+        assert_eq!(reloaded.findings[0].status, FindingStatus::FalsePositive);
+        assert_eq!(
+            reloaded.findings[0].auto_marked.as_deref(),
+            Some("not exploitable in this context")
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
     fn new_findings_get_fingerprint_backfilled() {
         // Inserting a new finding inside a tracked function should pick up
         // the enclosing entry's fingerprint and symbol_path.

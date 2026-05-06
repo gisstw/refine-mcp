@@ -126,6 +126,18 @@ pub struct QuickReviewParams {
     pub mode: Option<String>,
 }
 
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct MarkFindingParams {
+    /// Path to the plan file the finding belongs to (resolves the state file).
+    pub plan_path: String,
+    /// `Finding.id` to mutate (e.g. "RT-001").
+    pub finding_id: String,
+    /// New status. Accepts: `fixed` / `false_positive` / `confirmed` / `new`.
+    pub status: String,
+    /// Optional human-readable explanation. Stored in `Finding.auto_marked`.
+    pub note: Option<String>,
+}
+
 // ─── MCP Server ────────────────────────────────────────────────
 
 /// MCP server for grounded red-blue adversarial plan refinement.
@@ -829,6 +841,76 @@ impl RefineServer {
         )]))
     }
 
+    // ── Tool 8b: mark_finding ────────────────────────────────────
+
+    /// Manually update a finding's status — escape hatch when auto-mark
+    /// can't resolve a finding (rename, false positive, confirmation).
+    #[tool(
+        description = "Manually update a finding's status. Useful when auto-mark cannot \
+        resolve a finding, or to mark a confirmed false positive so it stops being reported. \
+        Accepts statuses: fixed, false_positive, confirmed, new."
+    )]
+    async fn mark_finding(
+        &self,
+        params: Parameters<MarkFindingParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let plan_path = Path::new(&params.0.plan_path);
+        let mut state = RefineState::load(plan_path).map_err(|e| {
+            rmcp::ErrorData::invalid_params(format!("State load failed: {e}"), None)
+        })?;
+
+        let new_status = match params.0.status.to_lowercase().as_str() {
+            "fixed" => refine_mcp::types::FindingStatus::Fixed,
+            "false_positive" | "falsepositive" | "fp" => {
+                refine_mcp::types::FindingStatus::FalsePositive
+            }
+            "confirmed" => refine_mcp::types::FindingStatus::Confirmed,
+            "new" => refine_mcp::types::FindingStatus::New,
+            other => {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!(
+                        "unknown status '{other}'; expected one of: fixed, false_positive, confirmed, new"
+                    ),
+                    None,
+                ));
+            }
+        };
+
+        let target = state
+            .findings
+            .iter_mut()
+            .find(|f| f.id == params.0.finding_id);
+
+        let Some(finding) = target else {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!("finding_id '{}' not found in state", params.0.finding_id),
+                None,
+            ));
+        };
+
+        let prev_status = finding.status;
+        finding.status = new_status;
+        finding.auto_marked = params.0.note.clone().or_else(|| {
+            Some(format!(
+                "manually set via mark_finding (was {prev_status:?})"
+            ))
+        });
+
+        state.save(plan_path).map_err(|e| {
+            rmcp::ErrorData::invalid_params(format!("State save failed: {e}"), None)
+        })?;
+
+        let output = serde_json::json!({
+            "finding_id": params.0.finding_id,
+            "previous_status": format!("{prev_status:?}"),
+            "new_status": format!("{:?}", new_status),
+            "note": params.0.note,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&output).unwrap_or_default(),
+        )]))
+    }
+
     // ── Tool 9: quick_review ─────────────────────────────────────
 
     /// Lightweight adversarial review from git diff. No plan file needed.
@@ -1320,10 +1402,10 @@ pub struct ExtractionOutput {
 /// their tool output so the agent cannot miss skip stats.
 #[must_use]
 pub fn summarize_skips(skipped: &[SkippedFile]) -> Option<String> {
+    use std::collections::BTreeMap;
     if skipped.is_empty() {
         return None;
     }
-    use std::collections::BTreeMap;
     let mut by_kind: BTreeMap<&str, usize> = BTreeMap::new();
     for s in skipped {
         let key = match &s.reason {

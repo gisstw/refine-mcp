@@ -69,7 +69,7 @@ fn scan_destructive(tree: &Tree, source: &str, warnings: &mut Vec<String>) {
         let kind = node.kind();
         // tree-sitter-sequel uses lowercase node kinds like `drop_statement`,
         // `delete_statement`. Match conservatively.
-        let line = (node.start_position().row + 1) as u32;
+        let line = u32::try_from(node.start_position().row + 1).unwrap_or(u32::MAX);
         match kind {
             "drop_statement" => {
                 if let Ok(text) = node.utf8_text(bytes) {
@@ -102,7 +102,7 @@ fn scan_schema_mutation(tree: &Tree, source: &str, warnings: &mut Vec<String>) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if node.kind() == "alter_table_statement" {
-            let line = (node.start_position().row + 1) as u32;
+            let line = u32::try_from(node.start_position().row + 1).unwrap_or(u32::MAX);
             if let Ok(text) = node.utf8_text(bytes) {
                 let lower = text.to_lowercase();
                 if lower.contains("drop column") {
@@ -125,7 +125,7 @@ fn scan_schema_mutation(tree: &Tree, source: &str, warnings: &mut Vec<String>) {
 fn scan_destructive_textual(source: &str, warnings: &mut Vec<String>) {
     for (idx, line) in source.lines().enumerate() {
         let upper = line.to_uppercase();
-        let line_no = (idx + 1) as u32;
+        let line_no = u32::try_from(idx + 1).unwrap_or(u32::MAX);
         if upper.contains("DROP TABLE") {
             warnings.push(format!("Line {line_no}: DROP TABLE is destructive"));
         }

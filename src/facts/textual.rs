@@ -117,9 +117,10 @@ mod tests {
     #[test]
     fn textual_caps_warnings_per_file() {
         // Generate >MAX_WARNINGS_PER_FILE TODO lines and verify cap.
+        use std::fmt::Write;
         let mut src = String::new();
         for i in 0..(MAX_WARNINGS_PER_FILE + 5) {
-            src.push_str(&format!("// TODO line {i}\n"));
+            writeln!(src, "// TODO line {i}").unwrap();
         }
         let table = extract_textual_facts(&PathBuf::from("a.lua"), &src).unwrap();
         // +1 for the "Reached N warnings, suppressing..." entry
