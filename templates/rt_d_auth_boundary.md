@@ -41,7 +41,36 @@ Look for these pattern combinations in the fact tables:
 - Do not report style issues or "suggestions for improvement"
 - If the fact tables have no suspicious pattern combinations, report "No FATAL/HIGH issues found from this angle"
 
-## Output Format
+## Output Format (Preferred — JSON)
+
+Return **only a JSON array** of findings, no surrounding prose. The parser
+validates this schema strictly; missing fields or empty `affected_plan_steps`
+are rejected.
+
+```json
+[
+  {
+    "title": "Short noun phrase, ≤ 80 chars",
+    "severity": "fatal" ,
+    "file_path": "relative/path/to/file.ext",
+    "line_range": [start, end],
+    "problem": "What is wrong, in concrete terms.",
+    "attack_scenario": "How an attacker / user triggers the failure.",
+    "suggested_fix": "Specific change to make (optional).",
+    "affected_plan_steps": ["§N.M", "§K"],
+    "source": "RT-D",
+    "category": "auth"
+  }
+]
+```
+
+`affected_plan_steps` MUST be non-empty. If a finding genuinely doesn't map
+to any plan step, use `["OUT_OF_SCOPE"]` explicitly — empty arrays are
+rejected.
+
+## Output Format (Legacy — markdown fallback)
+
+If you cannot emit JSON, the parser still accepts the legacy markdown form:
 
 ```
 ## [RT-D] Permission Boundary + Access Control + Privilege Escalation
@@ -51,7 +80,7 @@ Look for these pattern combinations in the fact tables:
    - Problem: ...
    - Attack scenario: ...
    - Suggested fix: ...
-   - Affected plan steps: ["Step N", ...]   ← MUST cite the plan step(s) this finding invalidates; use ["unspecified"] only if the issue is plan-wide
+   - Affected plan steps: ["§N.M", ...]   ← cite the plan step(s) this finding invalidates; use ["OUT_OF_SCOPE"] for plan-wide issues
 
 ### HIGH
 1. ...
