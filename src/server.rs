@@ -435,6 +435,7 @@ impl RefineServer {
         };
 
         // Build schema section for prompt injection
+        let mut prepare_warnings: Vec<String> = Vec::new();
         let schema_section = if let Some(ref schema_str) = params.0.schema_json {
             match serde_json::from_str::<refine_mcp::facts::types::SchemaSnapshot>(schema_str) {
                 Ok(schema) => {
@@ -469,7 +470,16 @@ impl RefineServer {
                         )
                     }
                 }
-                Err(_) => String::new(),
+                Err(e) => {
+                    // Tier 2 §0.5 / §1.0 silent failure rule: schema_json
+                    // parse errors must surface to caller, never silent.
+                    let msg = format!(
+                        "schema_json parse warning: {e} — proceeding with empty schema section"
+                    );
+                    tracing::warn!("{msg}");
+                    prepare_warnings.push(msg);
+                    String::new()
+                }
             }
         } else {
             String::new()
@@ -528,6 +538,9 @@ impl RefineServer {
         });
         if let Some(stats) = filter_stats {
             output["filtering"] = stats;
+        }
+        if !prepare_warnings.is_empty() {
+            output["warnings"] = serde_json::json!(prepare_warnings);
         }
 
         Ok(CallToolResult::success(vec![Content::text(
@@ -727,6 +740,19 @@ impl RefineServer {
             }
         }
 
+        // Tier 2 §0.5 / §1.0 silent-failure rule:
+        // non-empty raw input that parsed to zero findings is suspicious —
+        // likely a schema mismatch the parser silently glossed over. Surface
+        // an explicit warning so the agent can't mistake "0 findings" for
+        // "all clean".
+        if raw_count_total > 0 && raw_finding_count == 0 && parse_errors.is_empty() {
+            parse_errors.push(
+                "Parsed 0 findings from non-empty raw_reports — likely format mismatch \
+                 (red team output not in expected markdown schema). Check the report content."
+                    .to_string(),
+            );
+        }
+
         let output = serde_json::json!({
             "findings": active,
             "blue_prompt": blue_prompt.prompt,
@@ -741,6 +767,10 @@ impl RefineServer {
                 "fatal_count": fatal_count,
                 "high_count": high_count,
             },
+            // `warnings` is the user-visible top-level hook (Tier 2 §0.5);
+            // `parse_errors` retained as alias for backwards-compat with
+            // any callers that already key off it.
+            "warnings": parse_errors,
             "parse_errors": parse_errors,
         });
 
