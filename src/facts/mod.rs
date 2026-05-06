@@ -6,6 +6,7 @@ pub mod php;
 pub mod python;
 pub mod registry;
 pub mod rust_lang;
+pub mod sql;
 pub mod textual;
 pub mod types;
 pub mod typescript;

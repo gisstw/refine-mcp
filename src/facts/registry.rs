@@ -113,6 +113,10 @@ pub fn extract_for_path(path: &Path, source: &str) -> Result<ExtractResult, Extr
             crate::facts::markdown::extract_markdown_facts(path, source),
             ExtractMethod::TreeSitter,
         ),
+        "sql" => (
+            crate::facts::sql::extract_sql_facts(path, source),
+            ExtractMethod::TreeSitter,
+        ),
         _ => (
             crate::facts::textual::extract_textual_facts(path, source),
             ExtractMethod::Textual,
