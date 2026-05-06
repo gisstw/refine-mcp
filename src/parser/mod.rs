@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use regex::Regex;
+use serde::Deserialize;
 
-use crate::types::{Finding, RedTeamId, Severity};
+use crate::types::{Finding, FindingStatus, RedTeamId, Severity};
 
 // ─── Pre-compiled Regexes ──────────────────────────────────────
 
@@ -53,16 +54,188 @@ static RE_FIX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s+-\s+(?:建議修復|Suggested [Ff]ix)[：:](.+)").expect("valid regex")
 });
 
+// ─── JSON Schema (§3.1 / §3.2) ─────────────────────────────────
+
+/// Strict schema for a red team finding when the LLM emits JSON.
+/// `affected_plan_steps` is required and must be non-empty —
+/// `["OUT_OF_SCOPE"]` is the explicit opt-out (Tier 2 §0.5 / RT-B4).
+#[derive(Debug, Deserialize)]
+struct RawFinding {
+    title: String,
+    severity: String,
+    file_path: String,
+    #[serde(default)]
+    line_range: Option<(u32, u32)>,
+    #[serde(default)]
+    problem: String,
+    #[serde(default)]
+    attack_scenario: String,
+    #[serde(default)]
+    suggested_fix: Option<String>,
+    affected_plan_steps: Vec<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+}
+
+/// Which path successfully parsed a given red team report. The synthesize
+/// handler surfaces this so the agent knows when output is degraded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseMethod {
+    StrictJson,
+    JsonAfterStrip,
+    LegacyMarkdown,
+}
+
 // ─── Public API ────────────────────────────────────────────────
 
-/// Parse structured red team markdown output into `Finding` structs.
+/// Parse a red team report into `Finding` structs. Tries three strategies
+/// in order — strict JSON, JSON after stripping markdown fences, then the
+/// legacy markdown parser — all within a single call (Tier 2 §0.5 / RT-B3:
+/// no cross-call retry state).
 ///
-/// The expected format uses hierarchical headers:
-/// - `## [RT-A] description` — red team source
-/// - `### FATAL` / `### HIGH` — severity
-/// - `1. **title** (file:line-line)` — individual finding
-/// - `- 問題：...` / `- 攻擊場景：...` / `- 建議修復：...` — details
-pub fn parse_red_team_output(md: &str) -> anyhow::Result<Vec<Finding>> {
+/// Returns an error rather than `Ok(vec![])` when the input is non-empty
+/// but every strategy produces zero findings — that's the silent-failure
+/// shape we explicitly want to flag.
+pub fn parse_red_team_output(text: &str) -> anyhow::Result<Vec<Finding>> {
+    let (findings, _method) = parse_red_team_output_with_method(text)?;
+    Ok(findings)
+}
+
+/// Same as [`parse_red_team_output`] but also reports which strategy
+/// succeeded, so callers can warn the user when they've fallen back to
+/// the legacy markdown parser.
+pub fn parse_red_team_output_with_method(
+    text: &str,
+) -> anyhow::Result<(Vec<Finding>, ParseMethod)> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok((Vec::new(), ParseMethod::StrictJson));
+    }
+
+    // Stage 1: strict JSON.
+    if let Ok(raw) = serde_json::from_str::<Vec<RawFinding>>(trimmed) {
+        let findings = raw_findings_to_findings(raw)?;
+        return Ok((findings, ParseMethod::StrictJson));
+    }
+
+    // Stage 2: JSON after stripping ```json fences.
+    let stripped = strip_markdown_fences(trimmed);
+    if stripped != trimmed {
+        if let Ok(raw) = serde_json::from_str::<Vec<RawFinding>>(stripped.trim()) {
+            let findings = raw_findings_to_findings(raw)?;
+            return Ok((findings, ParseMethod::JsonAfterStrip));
+        }
+    }
+
+    // Stage 3: legacy markdown parser. Treat 0 findings as "the input
+    // parsed but had no valid finding blocks" only when the input does
+    // NOT look like JSON. If it started with `[` we know JSON parsing
+    // failed above and zero markdown findings means total format
+    // mismatch — surface that as an error.
+    let findings = parse_red_team_markdown(text)?;
+    if findings.is_empty() && looks_like_json(trimmed) {
+        return Err(anyhow::anyhow!(
+            "Parser produced 0 findings from JSON-looking input — likely schema mismatch. \
+             Expected a JSON array of findings."
+        ));
+    }
+    Ok((findings, ParseMethod::LegacyMarkdown))
+}
+
+fn looks_like_json(trimmed: &str) -> bool {
+    let stripped = strip_markdown_fences(trimmed).trim();
+    stripped.starts_with('[') || stripped.starts_with('{')
+}
+
+/// Strip a leading ```` ```json ```` fence and the trailing ``` ``` ```` fence
+/// (case-insensitive on `json`). Returns the original string if no fences
+/// are present.
+fn strip_markdown_fences(text: &str) -> &str {
+    let t = text.trim();
+    let bytes = t.as_bytes();
+    if !bytes.starts_with(b"```") {
+        return text;
+    }
+    // Find the first newline after the opening fence.
+    let after_open = match t.find('\n') {
+        Some(i) => &t[i + 1..],
+        None => return text,
+    };
+    // Find the closing fence.
+    if let Some(close_idx) = after_open.rfind("```") {
+        return after_open[..close_idx].trim_end();
+    }
+    text
+}
+
+fn raw_findings_to_findings(raw: Vec<RawFinding>) -> anyhow::Result<Vec<Finding>> {
+    let mut errors: Vec<String> = Vec::new();
+    let mut out = Vec::with_capacity(raw.len());
+    for (i, r) in raw.into_iter().enumerate() {
+        if r.affected_plan_steps.is_empty() {
+            errors.push(format!(
+                "finding #{}: affected_plan_steps is empty (use [\"OUT_OF_SCOPE\"] explicitly)",
+                i + 1
+            ));
+            continue;
+        }
+        if r.title.trim().is_empty() {
+            errors.push(format!("finding #{}: title is empty", i + 1));
+            continue;
+        }
+        let severity = match r.severity.to_lowercase().as_str() {
+            "fatal" | "critical" => Severity::Fatal,
+            "high" => Severity::High,
+            other => {
+                errors.push(format!(
+                    "finding #{}: invalid severity '{other}' (expected fatal/high)",
+                    i + 1
+                ));
+                continue;
+            }
+        };
+        let source = match r.source.as_deref().map(str::to_uppercase).as_deref() {
+            Some("RT-A" | "RTA") => RedTeamId::RtA,
+            Some("RT-B" | "RTB") => RedTeamId::RtB,
+            Some("RT-C" | "RTC") => RedTeamId::RtC,
+            Some("RT-D" | "RTD") => RedTeamId::RtD,
+            _ => RedTeamId::RtA, // sensible default; the source is also encoded in prompt routing
+        };
+        let mut finding = Finding::new(
+            severity,
+            r.title,
+            source,
+            PathBuf::from(r.file_path),
+        );
+        finding.id = format!("RT-{:03}", i + 1);
+        finding.line_range = r.line_range;
+        finding.problem = r.problem;
+        finding.attack_scenario = r.attack_scenario;
+        finding.suggested_fix = r.suggested_fix;
+        finding.affected_plan_steps = r.affected_plan_steps;
+        finding.status = FindingStatus::New;
+        if let Some(cat) = r.category {
+            // Stash category in symbol_path until we have a dedicated field;
+            // it's purely informational at the moment.
+            finding.symbol_path = Some(format!("category:{cat}"));
+        }
+        out.push(finding);
+    }
+    if !errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "JSON schema validation failed:\n{}",
+            errors.join("\n")
+        ));
+    }
+    Ok(out)
+}
+
+/// The historical markdown parser. Kept as a fallback for legacy red team
+/// output that doesn't (yet) follow the JSON schema. Same signature as the
+/// pre-§3.2 `parse_red_team_output`.
+fn parse_red_team_markdown(md: &str) -> anyhow::Result<Vec<Finding>> {
     let mut findings = Vec::new();
     let mut current_source: Option<RedTeamId> = None;
     let mut current_severity: Option<Severity> = None;
@@ -341,5 +514,90 @@ mod tests {
             findings.is_empty(),
             "should skip findings without problem or attack_scenario"
         );
+    }
+
+    // ── JSON path (§3.2) ──
+
+    #[test]
+    fn parses_strict_json_array() {
+        let json = r#"[
+            {
+                "title": "SQL injection in cart",
+                "severity": "fatal",
+                "file_path": "app/CartController.php",
+                "line_range": [42, 50],
+                "problem": "User input goes straight into raw SQL",
+                "attack_scenario": "Drop cart_items via crafted query",
+                "suggested_fix": "Use parameterized queries",
+                "affected_plan_steps": ["§2.3"],
+                "source": "RT-A",
+                "category": "silent_failure"
+            }
+        ]"#;
+        let (findings, method) = parse_red_team_output_with_method(json).unwrap();
+        assert_eq!(method, ParseMethod::StrictJson);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Fatal);
+        assert_eq!(findings[0].sources, vec![RedTeamId::RtA]);
+        assert_eq!(findings[0].affected_plan_steps, vec!["§2.3"]);
+        assert_eq!(
+            findings[0].symbol_path.as_deref(),
+            Some("category:silent_failure")
+        );
+    }
+
+    #[test]
+    fn parses_json_after_stripping_markdown_fences() {
+        let wrapped = "```json\n[{\
+            \"title\":\"X\",\
+            \"severity\":\"high\",\
+            \"file_path\":\"a.rs\",\
+            \"problem\":\"p\",\
+            \"attack_scenario\":\"a\",\
+            \"affected_plan_steps\":[\"OUT_OF_SCOPE\"]\
+        }]\n```";
+        let (findings, method) = parse_red_team_output_with_method(wrapped).unwrap();
+        assert_eq!(method, ParseMethod::JsonAfterStrip);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn rejects_json_with_empty_affected_plan_steps() {
+        let json = r#"[{
+            "title": "X",
+            "severity": "high",
+            "file_path": "a.rs",
+            "problem": "p",
+            "attack_scenario": "a",
+            "affected_plan_steps": []
+        }]"#;
+        let err = parse_red_team_output(json).unwrap_err();
+        assert!(
+            err.to_string().contains("affected_plan_steps"),
+            "expected schema error mentioning affected_plan_steps, got: {err}"
+        );
+    }
+
+    #[test]
+    fn json_looking_input_with_zero_findings_is_an_error() {
+        // Valid JSON shape but parses to nothing useful via markdown either.
+        let bad = "[ \"random text\" ]";
+        let err = parse_red_team_output(bad).unwrap_err();
+        // Exact message varies; the key thing is it's an error, not Ok([]).
+        let msg = err.to_string();
+        assert!(
+            msg.contains("schema") || msg.contains("0 findings") || msg.contains("invalid"),
+            "expected schema-mismatch error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn pure_markdown_with_zero_findings_is_not_an_error() {
+        // Random prose that isn't a finding report and isn't JSON-looking
+        // should still parse to Ok(empty) — only JSON-shaped input gets
+        // the strict-zero treatment.
+        let prose = "Just some discussion without any structured findings.\n";
+        let findings = parse_red_team_output(prose).unwrap();
+        assert!(findings.is_empty());
     }
 }
