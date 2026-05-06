@@ -27,8 +27,9 @@ pub struct FactTable {
     pub fingerprints: Vec<FingerprintEntry>,
 }
 
-/// How a `FactTable` was produced. Currently only `TreeSitter`; reserved
-/// variants (`Textual`, `BladePreproc`, `Json`) land with §2.3 / §2.5 / §4.4.
+/// How a `FactTable` was produced. Red team prompts read this to scale
+/// scrutiny — facts from `Textual` fallback are heuristic-only and merit
+/// extra review. `BladePreproc` lands with §2.3.
 #[derive(
     Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default,
 )]
@@ -36,6 +37,13 @@ pub struct FactTable {
 pub enum ExtractMethod {
     #[default]
     TreeSitter,
+    /// File extension has no tree-sitter parser; we ran a heuristic text
+    /// scan instead. Findings against these files should be treated with
+    /// lower confidence.
+    Textual,
+    /// `.blade.php`: source was preprocessed (Blade directives → PHP
+    /// equivalents) before being parsed by the PHP tree-sitter grammar.
+    BladePreproc,
 }
 
 /// Identifies a single function (or other addressable unit) for cross-run

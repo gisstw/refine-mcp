@@ -17,8 +17,11 @@ pub struct ExtractResult {
 }
 
 /// Reasons extraction can fail. The caller decides how to surface each kind
-/// (logging to `format-issues.log`, error message to the user, `skipped_files`
-/// reporting once §1.3 lands).
+/// (logging to `format-issues.log`, error message to the user,
+/// `skipped_files` reporting). `Unsupported` is currently unreachable —
+/// `extract_for_path` falls back to the textual extractor (§2.5) for any
+/// extension without a tree-sitter grammar — but the variant is kept for
+/// callers that may want a future "strict, no-fallback" mode.
 #[derive(Debug, thiserror::Error)]
 pub enum ExtractError {
     #[error("unsupported language: .{ext}")]
@@ -58,8 +61,11 @@ impl ExtractError {
 }
 
 /// Run the extractor matching this file's extension and wrap the resulting
-/// `FactTable` in an `ExtractResult`. Returns a structured `ExtractError` on
-/// any failure so the caller can map it to logs and user-visible errors.
+/// `FactTable` in an `ExtractResult`. Returns a structured `ExtractError`
+/// only for cases the caller has to act on (no extension, or a tree-sitter
+/// parse failure). Unknown extensions get a heuristic textual scan so the
+/// caller still sees *something*; the table's `extract_method` flags the
+/// reduced precision.
 pub fn extract_for_path(path: &Path, source: &str) -> Result<ExtractResult, ExtractError> {
     // .blade.php must be detected before falling back to the PHP parser
     // (§2.3); this hook is reserved for that future commit.
@@ -68,27 +74,38 @@ pub fn extract_for_path(path: &Path, source: &str) -> Result<ExtractResult, Extr
         .and_then(|e| e.to_str())
         .ok_or(ExtractError::NoExtension)?;
 
-    let facts = match ext {
-        "php" => crate::facts::php::extract_php_facts(path, source),
-        "rs" => crate::facts::rust_lang::extract_rust_facts(path, source),
-        "ts" | "tsx" | "js" | "jsx" => crate::facts::typescript::extract_ts_facts(path, source),
-        "py" => crate::facts::python::extract_python_facts(path, source),
-        "md" => crate::facts::markdown::extract_markdown_facts(path, source),
-        other => {
-            return Err(ExtractError::Unsupported {
-                ext: other.to_string(),
-            });
-        }
+    let (facts, method) = match ext {
+        "php" => (
+            crate::facts::php::extract_php_facts(path, source),
+            ExtractMethod::TreeSitter,
+        ),
+        "rs" => (
+            crate::facts::rust_lang::extract_rust_facts(path, source),
+            ExtractMethod::TreeSitter,
+        ),
+        "ts" | "tsx" | "js" | "jsx" => (
+            crate::facts::typescript::extract_ts_facts(path, source),
+            ExtractMethod::TreeSitter,
+        ),
+        "py" => (
+            crate::facts::python::extract_python_facts(path, source),
+            ExtractMethod::TreeSitter,
+        ),
+        "md" => (
+            crate::facts::markdown::extract_markdown_facts(path, source),
+            ExtractMethod::TreeSitter,
+        ),
+        _ => (
+            crate::facts::textual::extract_textual_facts(path, source),
+            ExtractMethod::Textual,
+        ),
     };
 
     facts
         .map(|mut t| {
-            t.extract_method = ExtractMethod::TreeSitter;
+            t.extract_method = method;
             t.fingerprints = crate::fingerprint::compute_for_table(&t, source);
-            ExtractResult {
-                facts: t,
-                method: ExtractMethod::TreeSitter,
-            }
+            ExtractResult { facts: t, method }
         })
         .map_err(|source| ExtractError::Parse {
             ext: ext.to_string(),
@@ -102,10 +119,15 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn unsupported_extension_reports_ext_and_kind() {
-        let err = extract_for_path(&PathBuf::from("foo.lua"), "").unwrap_err();
-        assert_eq!(err.ext(), "lua");
-        assert_eq!(err.kind(), "unsupported");
+    fn unsupported_extension_falls_back_to_textual() {
+        let result = extract_for_path(&PathBuf::from("foo.lua"), "-- TODO: review\n")
+            .expect("textual fallback must always succeed");
+        assert_eq!(result.method, ExtractMethod::Textual);
+        assert_eq!(result.facts.extract_method, ExtractMethod::Textual);
+        assert!(
+            result.facts.warnings.iter().any(|w| w.contains("TODO")),
+            "textual fallback should surface TODO markers"
+        );
     }
 
     #[test]
