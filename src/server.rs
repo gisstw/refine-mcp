@@ -194,19 +194,23 @@ impl RefineServer {
 
         let (plan_path, plan_content) = discover_latest_plan(&dir_path)?;
         let file_refs = extract_file_references(&plan_content);
-        let (tables, errors) = run_extraction(&file_refs, diff_only)?;
+        let extraction = run_extraction(&file_refs, diff_only)?;
 
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "plan_path": plan_path.to_string_lossy(),
             "plan_content": plan_content,
             "referenced_files": file_refs,
-            "fact_tables": tables,
-            "errors": errors,
-            "file_count": tables.len(),
-            "total_functions": tables.iter().map(|t| t.functions.len()).sum::<usize>(),
-            "total_warnings": tables.iter().map(|t| t.warnings.len()).sum::<usize>(),
+            "fact_tables": extraction.tables,
+            "errors": extraction.errors,
+            "skipped_files": extraction.skipped_files,
+            "file_count": extraction.tables.len(),
+            "total_functions": extraction.tables.iter().map(|t| t.functions.len()).sum::<usize>(),
+            "total_warnings": extraction.tables.iter().map(|t| t.warnings.len()).sum::<usize>(),
             "diff_only": diff_only,
         });
+        if let Some(banner) = summarize_skips(&extraction.skipped_files) {
+            output["skip_summary"] = serde_json::Value::String(banner);
+        }
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&output).unwrap_or_default(),
@@ -228,16 +232,20 @@ impl RefineServer {
             validate_path(fp)?;
         }
 
-        let (tables, errors) = run_extraction(&params.0.file_paths, diff_only)?;
+        let extraction = run_extraction(&params.0.file_paths, diff_only)?;
 
-        let output = serde_json::json!({
-            "fact_tables": tables,
-            "errors": errors,
-            "file_count": tables.len(),
-            "total_functions": tables.iter().map(|t| t.functions.len()).sum::<usize>(),
-            "total_warnings": tables.iter().map(|t| t.warnings.len()).sum::<usize>(),
+        let mut output = serde_json::json!({
+            "fact_tables": extraction.tables,
+            "errors": extraction.errors,
+            "skipped_files": extraction.skipped_files,
+            "file_count": extraction.tables.len(),
+            "total_functions": extraction.tables.iter().map(|t| t.functions.len()).sum::<usize>(),
+            "total_warnings": extraction.tables.iter().map(|t| t.warnings.len()).sum::<usize>(),
             "diff_only": diff_only,
         });
+        if let Some(banner) = summarize_skips(&extraction.skipped_files) {
+            output["skip_summary"] = serde_json::Value::String(banner);
+        }
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&output).unwrap_or_default(),
@@ -857,7 +865,7 @@ impl RefineServer {
         }
 
         // 2. Extract facts via tree-sitter
-        let (fact_tables, extract_errors) = match run_extraction(&changed_files, false) {
+        let extraction = match run_extraction(&changed_files, false) {
             Ok(result) => result,
             Err(e) => {
                 tracing::warn!(
@@ -874,6 +882,9 @@ impl RefineServer {
                 )]));
             }
         };
+        let fact_tables = extraction.tables;
+        let extract_errors = extraction.errors;
+        let extract_skipped = extraction.skipped_files;
 
         if fact_tables.is_empty() {
             tracing::warn!(
@@ -884,7 +895,11 @@ impl RefineServer {
             let mut result = serde_json::json!({
                 "error": "No facts extracted. Files may be unsupported languages or unreadable.",
                 "changed_files": changed_files,
+                "skipped_files": extract_skipped,
             });
+            if let Some(banner) = summarize_skips(&extract_skipped) {
+                result["skip_summary"] = serde_json::Value::String(banner);
+            }
             if !extract_errors.is_empty() {
                 result["extract_errors"] = serde_json::json!(extract_errors);
             }
@@ -965,16 +980,18 @@ impl RefineServer {
             },
         });
 
+        let mut o = output;
         if !extract_errors.is_empty() {
-            let mut o = output;
             o["extract_warnings"] = serde_json::json!(extract_errors);
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&o).unwrap_or_default(),
-            )]));
         }
-
+        if !extract_skipped.is_empty() {
+            o["skipped_files"] = serde_json::json!(extract_skipped);
+            if let Some(banner) = summarize_skips(&extract_skipped) {
+                o["skip_summary"] = serde_json::Value::String(banner);
+            }
+        }
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&output).unwrap_or_default(),
+            serde_json::to_string_pretty(&o).unwrap_or_default(),
         )]))
     }
 }
@@ -1272,14 +1289,71 @@ fn discover_latest_plan(dir: &Path) -> Result<(PathBuf, String), rmcp::ErrorData
     Ok((plan_path, plan_content))
 }
 
+/// One file we deliberately did not extract facts from. The agent must see
+/// these — silent skips eat real coverage gaps (Tier 2 §0.5 / §1.3).
+#[derive(Debug, Clone, Serialize)]
+pub struct SkippedFile {
+    pub path: String,
+    pub reason: SkipReason,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SkipReason {
+    UnsupportedExtension { ext: String },
+    NoExtension,
+    NotFound,
+    ReadFailed { error: String },
+}
+
+/// Result bundle returned by `run_extraction`. Replaces the earlier
+/// `(tables, errors)` pair so callers can surface `skipped_files` distinctly
+/// from extraction-level errors (parse failures).
+#[derive(Debug, Default)]
+pub struct ExtractionOutput {
+    pub tables: Vec<FactTable>,
+    pub errors: Vec<String>,
+    pub skipped_files: Vec<SkippedFile>,
+}
+
+/// Build the user-facing summary line that callers paste at the top of
+/// their tool output so the agent cannot miss skip stats.
+#[must_use]
+pub fn summarize_skips(skipped: &[SkippedFile]) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+    use std::collections::BTreeMap;
+    let mut by_kind: BTreeMap<&str, usize> = BTreeMap::new();
+    for s in skipped {
+        let key = match &s.reason {
+            SkipReason::UnsupportedExtension { .. } => "unsupported_extension",
+            SkipReason::NoExtension => "no_extension",
+            SkipReason::NotFound => "not_found",
+            SkipReason::ReadFailed { .. } => "read_failed",
+        };
+        *by_kind.entry(key).or_insert(0) += 1;
+    }
+    let parts: Vec<String> = by_kind
+        .into_iter()
+        .map(|(k, n)| format!("{k}: {n}"))
+        .collect();
+    Some(format!(
+        "⚠️ Skipped {} file(s) — {}",
+        skipped.len(),
+        parts.join(", ")
+    ))
+}
+
 /// Run tree-sitter fact extraction on a list of file paths.
 ///
 /// Optionally filters to git-changed files when `diff_only` is true.
-/// Returns `(fact_tables, errors)`. Returns an MCP error only if ALL files fail.
+/// Returns an MCP error only if ALL files fail and there is nothing the
+/// caller can do with a partial result.
 fn run_extraction(
     file_paths: &[String],
     diff_only: bool,
-) -> Result<(Vec<FactTable>, Vec<String>), rmcp::ErrorData> {
+) -> Result<ExtractionOutput, rmcp::ErrorData> {
     let mut paths: Vec<String> = file_paths.to_vec();
 
     if diff_only {
@@ -1294,57 +1368,79 @@ fn run_extraction(
         }
     }
 
-    let mut tables = Vec::new();
-    let mut errors = Vec::new();
+    let mut out = ExtractionOutput::default();
 
     for file_path_str in &paths {
         let path = PathBuf::from(file_path_str);
 
         if !path.exists() {
-            errors.push(format!("File not found: {file_path_str}"));
+            out.skipped_files.push(SkippedFile {
+                path: file_path_str.clone(),
+                reason: SkipReason::NotFound,
+            });
+            out.errors.push(format!("File not found: {file_path_str}"));
             continue;
         }
 
         let source = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) => {
-                errors.push(format!("Failed to read {file_path_str}: {e}"));
+                out.skipped_files.push(SkippedFile {
+                    path: file_path_str.clone(),
+                    reason: SkipReason::ReadFailed {
+                        error: e.to_string(),
+                    },
+                });
+                out.errors
+                    .push(format!("Failed to read {file_path_str}: {e}"));
                 continue;
             }
         };
 
         match refine_mcp::facts::registry::extract_for_path(&path, &source) {
-            Ok(result) => tables.push(result.facts),
+            Ok(result) => out.tables.push(result.facts),
             Err(err) => {
                 log_format_issue(err.kind(), err.ext(), file_path_str, &err.to_string());
-                let user_msg = match &err {
+                match &err {
                     refine_mcp::facts::registry::ExtractError::Unsupported { ext } => {
-                        format!("Unsupported language: .{ext} ({file_path_str})")
+                        out.skipped_files.push(SkippedFile {
+                            path: file_path_str.clone(),
+                            reason: SkipReason::UnsupportedExtension { ext: ext.clone() },
+                        });
+                        out.errors
+                            .push(format!("Unsupported language: .{ext} ({file_path_str})"));
                     }
                     refine_mcp::facts::registry::ExtractError::NoExtension => {
-                        format!("No file extension: {file_path_str}")
+                        out.skipped_files.push(SkippedFile {
+                            path: file_path_str.clone(),
+                            reason: SkipReason::NoExtension,
+                        });
+                        out.errors
+                            .push(format!("No file extension: {file_path_str}"));
                     }
                     refine_mcp::facts::registry::ExtractError::Parse { source, .. } => {
-                        format!("Parse error for {file_path_str}: {source}")
+                        // Parse failures are extraction errors, not skips —
+                        // we did try to extract, the parser failed.
+                        out.errors
+                            .push(format!("Parse error for {file_path_str}: {source}"));
                     }
-                };
-                errors.push(user_msg);
+                }
             }
         }
     }
 
-    if tables.is_empty() && !errors.is_empty() {
+    if out.tables.is_empty() && !out.errors.is_empty() {
         return Err(rmcp::ErrorData::invalid_params(
             format!(
                 "All {} files failed extraction: {}",
-                errors.len(),
-                errors.join("; ")
+                out.errors.len(),
+                out.errors.join("; ")
             ),
             None,
         ));
     }
 
-    Ok((tables, errors))
+    Ok(out)
 }
 
 /// Get files changed relative to HEAD via `git diff`.
@@ -1482,6 +1578,35 @@ fn date_today() -> String {
 mod tests {
     use super::*;
     use refine_mcp::types::{Finding, FindingStatus, RedTeamId, Severity};
+
+    // ── summarize_skips ──
+
+    #[test]
+    fn summarize_skips_returns_none_when_empty() {
+        assert!(summarize_skips(&[]).is_none());
+    }
+
+    #[test]
+    fn summarize_skips_groups_by_kind() {
+        let skipped = vec![
+            SkippedFile {
+                path: "a.lua".into(),
+                reason: SkipReason::UnsupportedExtension { ext: "lua".into() },
+            },
+            SkippedFile {
+                path: "b.lua".into(),
+                reason: SkipReason::UnsupportedExtension { ext: "lua".into() },
+            },
+            SkippedFile {
+                path: "Makefile".into(),
+                reason: SkipReason::NoExtension,
+            },
+        ];
+        let banner = summarize_skips(&skipped).expect("non-empty input must produce banner");
+        assert!(banner.starts_with("⚠️ Skipped 3 file(s)"));
+        assert!(banner.contains("unsupported_extension: 2"));
+        assert!(banner.contains("no_extension: 1"));
+    }
 
     // ── parse_mode ──
 
