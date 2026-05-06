@@ -1,3 +1,4 @@
+pub mod blade;
 pub mod blast_radius;
 pub mod markdown;
 pub mod migration;

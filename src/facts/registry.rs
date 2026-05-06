@@ -67,8 +67,26 @@ impl ExtractError {
 /// caller still sees *something*; the table's `extract_method` flags the
 /// reduced precision.
 pub fn extract_for_path(path: &Path, source: &str) -> Result<ExtractResult, ExtractError> {
-    // .blade.php must be detected before falling back to the PHP parser
-    // (§2.3); this hook is reserved for that future commit.
+    // `.blade.php` must beat the bare `.php` arm because `path.extension()`
+    // strips only the trailing `.php`, hiding the Blade nature.
+    if path
+        .to_string_lossy()
+        .ends_with(".blade.php")
+    {
+        return crate::facts::blade::extract_blade_facts(path, source)
+            .map(|mut t| {
+                t.fingerprints = crate::fingerprint::compute_for_table(&t, source);
+                ExtractResult {
+                    facts: t,
+                    method: ExtractMethod::BladePreproc,
+                }
+            })
+            .map_err(|source| ExtractError::Parse {
+                ext: "blade.php".to_string(),
+                source,
+            });
+    }
+
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
