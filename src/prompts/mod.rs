@@ -1,5 +1,94 @@
+use std::sync::LazyLock;
+
+use regex::Regex;
+
 use crate::facts::types::FactTable;
 use crate::types::{Finding, RedTeamId, RedTeamPrompt, RefineMode};
+
+// ─── Plan Step Extraction (§3.3 / RT-B4) ──────────────────────
+
+/// One step parsed out of a plan file. `id` is the canonical short form
+/// (e.g. `§2.1` or `Step 3`) red teams cite back in `affected_plan_steps`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanStep {
+    pub id: String,
+    pub title: String,
+}
+
+/// Match heading lines containing a leading number, with or without a
+/// `Step N` / `Phase N` prefix. Supports nested numbering (`### 2.1.3`),
+/// dual-format separators (`.`, `:`, `：`), and §-prefixed forms.
+/// Captures: (1)=the heading hashes, (2)=the dotted number, (3)=title.
+static RE_NUMBERED_HEADING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(#{2,4})\s+(?:Step\s+|Phase\s+|§)?(\d+(?:\.\d+){0,2})[\s.:：](.*?)$",
+    )
+    .expect("valid regex")
+});
+
+/// Fallback when there's no numbered headings: any H2/H3 becomes a step.
+static RE_HEADING_ANY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(#{2,3})\s+(.+?)\s*$").expect("valid regex"));
+
+/// Pull plan steps out of a plan markdown file. Tries (a) numbered headings
+/// like `### 2.1 Title` or `## Step 3: Title`, then falls back to (b) any
+/// H2/H3 if the numbered pass produced fewer than 3.
+///
+/// The Tier 2 review (RT-B4) flagged that the previous regex required a
+/// literal `Step N` prefix and silently produced an empty list on plans
+/// using `### 2.1` style — so red teams' `affected_plan_steps` always
+/// degraded to OUT_OF_SCOPE. The fallback prevents that degradation.
+#[must_use]
+pub fn extract_plan_steps(plan_md: &str) -> Vec<PlanStep> {
+    let mut numbered: Vec<PlanStep> = Vec::new();
+    for line in plan_md.lines() {
+        if let Some(caps) = RE_NUMBERED_HEADING.captures(line) {
+            let id = format!("§{}", caps[2].trim());
+            let title = caps[3].trim().trim_start_matches('—').trim().to_string();
+            numbered.push(PlanStep { id, title });
+        }
+    }
+    if numbered.len() >= 3 {
+        return numbered;
+    }
+
+    // Fallback: any H2/H3 we see, numbered sequentially.
+    let mut fallback: Vec<PlanStep> = Vec::new();
+    for line in plan_md.lines() {
+        if let Some(caps) = RE_HEADING_ANY.captures(line) {
+            // Skip lines that already matched the numbered pass — they're
+            // in `numbered`, but we want their numbers consistent.
+            let title = caps[2].trim().to_string();
+            fallback.push(PlanStep {
+                id: format!("Step {}", fallback.len() + 1),
+                title,
+            });
+        }
+    }
+    if !numbered.is_empty() && numbered.len() > fallback.len() {
+        return numbered;
+    }
+    if !fallback.is_empty() {
+        return fallback;
+    }
+    numbered
+}
+
+/// Render the available step list as a prompt fragment red teams can read.
+fn render_plan_steps_section(steps: &[PlanStep]) -> String {
+    if steps.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n## Available plan steps\n\nWhen reporting findings, set `affected_plan_steps` to one or more of these step IDs (or `[\"OUT_OF_SCOPE\"]` if a finding genuinely doesn't fit any step). Empty arrays are rejected.\n\n");
+    for s in steps {
+        if s.title.is_empty() {
+            out.push_str(&format!("- `{}`\n", s.id));
+        } else {
+            out.push_str(&format!("- `{}` — {}\n", s.id, s.title));
+        }
+    }
+    out
+}
 
 // ─── Embedded Templates ────────────────────────────────────────
 
@@ -48,6 +137,8 @@ pub fn build_red_team_prompts_selected(
     teams: &[RedTeamId],
 ) -> Vec<RedTeamPrompt> {
     let facts_json = serde_json::to_string_pretty(fact_tables).unwrap_or_else(|_| "[]".to_string());
+    let steps = extract_plan_steps(plan_content);
+    let plan_steps_section = render_plan_steps_section(&steps);
 
     teams
         .iter()
@@ -56,6 +147,7 @@ pub fn build_red_team_prompts_selected(
             let prompt = template
                 .replace("{plan_content}", plan_content)
                 .replace("{fact_tables}", &facts_json)
+                .replace("{plan_steps_section}", &plan_steps_section)
                 .replace("{schema_section}", "");
             RedTeamPrompt {
                 id: *id,
@@ -210,6 +302,8 @@ pub fn build_red_team_prompts_with_schema(
     schema_section: &str,
 ) -> Vec<RedTeamPrompt> {
     let facts_json = serde_json::to_string_pretty(fact_tables).unwrap_or_else(|_| "[]".to_string());
+    let steps = extract_plan_steps(plan_content);
+    let plan_steps_section = render_plan_steps_section(&steps);
 
     teams
         .iter()
@@ -218,6 +312,7 @@ pub fn build_red_team_prompts_with_schema(
             let prompt = template
                 .replace("{plan_content}", plan_content)
                 .replace("{fact_tables}", &facts_json)
+                .replace("{plan_steps_section}", &plan_steps_section)
                 .replace("{schema_section}", schema_section);
             RedTeamPrompt {
                 id: *id,
@@ -368,6 +463,95 @@ mod tests {
     use super::*;
     use crate::facts::types::{ExtractMethod, FunctionFact, Language};
     use std::path::PathBuf;
+
+    // ── extract_plan_steps (§3.3 / RT-B4) ──
+
+    #[test]
+    fn extract_plan_steps_handles_dotted_section_headings() {
+        let plan = "\
+# Plan Title
+
+## 1. Overview
+
+## 2. Phase 1
+
+### 2.1 First step
+some content
+
+### 2.2 Second step
+more content
+
+## 3. Phase 2
+
+### 3.1 Third step
+content
+";
+        let steps = extract_plan_steps(plan);
+        let ids: Vec<&str> = steps.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.iter().any(|id| *id == "§2.1"), "expected §2.1 in {ids:?}");
+        assert!(ids.iter().any(|id| *id == "§2.2"));
+        assert!(ids.iter().any(|id| *id == "§3.1"));
+    }
+
+    #[test]
+    fn extract_plan_steps_handles_step_n_format() {
+        let plan = "\
+## Step 1: Add webhook handler
+## Step 2: Sync inventory
+## Step 3: OTA cancellation flow
+";
+        let steps = extract_plan_steps(plan);
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].id, "§1");
+        assert_eq!(steps[2].id, "§3");
+        assert!(steps[0].title.contains("webhook"));
+    }
+
+    #[test]
+    fn extract_plan_steps_falls_back_to_any_h2_h3_when_no_numbers() {
+        let plan = "\
+## Background
+
+## Approach
+
+### Implementation
+
+### Testing
+
+### Rollout
+";
+        let steps = extract_plan_steps(plan);
+        assert!(
+            steps.len() >= 3,
+            "fallback should yield ≥3 steps, got {steps:?}"
+        );
+        assert!(steps[0].id.starts_with("Step "));
+    }
+
+    #[test]
+    fn extract_plan_steps_empty_plan_yields_empty() {
+        assert!(extract_plan_steps("").is_empty());
+    }
+
+    #[test]
+    fn render_plan_steps_section_includes_each_id() {
+        let steps = vec![
+            PlanStep {
+                id: "§2.1".to_string(),
+                title: "Fingerprint".to_string(),
+            },
+            PlanStep {
+                id: "§3.2".to_string(),
+                title: "Schema validation".to_string(),
+            },
+        ];
+        let out = render_plan_steps_section(&steps);
+        assert!(out.contains("§2.1"));
+        assert!(out.contains("§3.2"));
+        assert!(out.contains("Fingerprint"));
+        assert!(out.contains("OUT_OF_SCOPE"));
+    }
+
 
     fn sample_fact_table() -> FactTable {
         FactTable {

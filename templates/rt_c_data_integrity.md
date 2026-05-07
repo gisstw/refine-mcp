@@ -46,6 +46,8 @@ Look for these pattern combinations in the fact tables:
 - Do not report style issues or "suggestions for improvement"
 - If the fact tables have no suspicious pattern combinations, report "No FATAL/HIGH issues found from this angle"
 
+{plan_steps_section}
+
 ## Output Format (Preferred — JSON)
 
 Return **only a JSON array** of findings, no surrounding prose. The parser
