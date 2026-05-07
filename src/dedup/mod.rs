@@ -60,7 +60,7 @@ pub fn dedup_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
     }
 
     // Sort by impact score descending
-    merged.sort_by(|a, b| b.impact_score.cmp(&a.impact_score));
+    merged.sort_by_key(|f| std::cmp::Reverse(f.impact_score));
 
     merged
 }

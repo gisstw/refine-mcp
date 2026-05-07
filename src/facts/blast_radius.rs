@@ -287,9 +287,7 @@ fn grep_symbol(
 fn is_function_definition(context: &str, symbol: &str) -> bool {
     // Match patterns like `function symbolName(`, `fn symbol_name(`, `def symbol_name(`
     let pattern = format!(r"\b(?:function|fn|def)\s+{symbol}\s*\(");
-    Regex::new(&pattern)
-        .map(|re| re.is_match(context))
-        .unwrap_or(false)
+    Regex::new(&pattern).is_ok_and(|re| re.is_match(context))
 }
 
 /// Fallback: extract all non-private function names from plan files using
