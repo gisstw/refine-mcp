@@ -137,26 +137,14 @@ pub fn build_red_team_prompts_selected(
     fact_tables: &[FactTable],
     teams: &[RedTeamId],
 ) -> Vec<RedTeamPrompt> {
-    let facts_json = serde_json::to_string_pretty(fact_tables).unwrap_or_else(|_| "[]".to_string());
-    let steps = extract_plan_steps(plan_content);
-    let plan_steps_section = render_plan_steps_section(&steps);
-
-    teams
-        .iter()
-        .map(|id| {
-            let template = template_for(*id);
-            let prompt = template
-                .replace("{plan_content}", plan_content)
-                .replace("{fact_tables}", &facts_json)
-                .replace("{plan_steps_section}", &plan_steps_section)
-                .replace("{schema_section}", "");
-            RedTeamPrompt {
-                id: *id,
-                prompt,
-                recommended_model: mode.red_model().to_string(),
-            }
-        })
-        .collect()
+    build_red_team_prompts_with_context(
+        mode,
+        plan_content,
+        fact_tables,
+        teams,
+        "",
+        &[],
+    )
 }
 
 /// Automatically select which red teams to run based on fact table signals.
@@ -302,6 +290,30 @@ pub fn build_red_team_prompts_with_schema(
     teams: &[RedTeamId],
     schema_section: &str,
 ) -> Vec<RedTeamPrompt> {
+    build_red_team_prompts_with_context(
+        mode,
+        plan_content,
+        fact_tables,
+        teams,
+        schema_section,
+        &[],
+    )
+}
+
+/// Like [`build_red_team_prompts_with_schema`] but also injects rules from
+/// loaded [`crate::packs::DomainPack`]s into the per-team prompts via the
+/// `{domain_packs_section}` placeholder. Each red team only sees the rules
+/// targeted at it; sections without rules render as empty strings so the
+/// placeholder doesn't leak literal `{...}` into the prompt.
+#[must_use]
+pub fn build_red_team_prompts_with_context(
+    mode: RefineMode,
+    plan_content: &str,
+    fact_tables: &[FactTable],
+    teams: &[RedTeamId],
+    schema_section: &str,
+    packs: &[crate::packs::DomainPack],
+) -> Vec<RedTeamPrompt> {
     let facts_json = serde_json::to_string_pretty(fact_tables).unwrap_or_else(|_| "[]".to_string());
     let steps = extract_plan_steps(plan_content);
     let plan_steps_section = render_plan_steps_section(&steps);
@@ -310,11 +322,13 @@ pub fn build_red_team_prompts_with_schema(
         .iter()
         .map(|id| {
             let template = template_for(*id);
+            let domain_section = crate::packs::render_for_team(packs, *id);
             let prompt = template
                 .replace("{plan_content}", plan_content)
                 .replace("{fact_tables}", &facts_json)
                 .replace("{plan_steps_section}", &plan_steps_section)
-                .replace("{schema_section}", schema_section);
+                .replace("{schema_section}", schema_section)
+                .replace("{domain_packs_section}", &domain_section);
             RedTeamPrompt {
                 id: *id,
                 prompt,
@@ -532,6 +546,53 @@ content
     #[test]
     fn extract_plan_steps_empty_plan_yields_empty() {
         assert!(extract_plan_steps("").is_empty());
+    }
+
+    #[test]
+    fn domain_pack_rules_are_injected_into_matching_team_only() {
+        use crate::packs::{DomainPack, PackSource};
+        use std::collections::HashMap;
+
+        let mut sections = HashMap::new();
+        sections.insert(
+            RedTeamId::RtA,
+            vec!["Mass assignment without $fillable".to_string()],
+        );
+        let pack = DomainPack {
+            name: "laravel".to_string(),
+            source: PackSource::Builtin,
+            sections,
+        };
+
+        // Create a minimal fact table, no plan steps needed.
+        let facts: Vec<FactTable> = vec![];
+        let prompts = build_red_team_prompts_with_context(
+            RefineMode::Lite,
+            "## 1. Plan",
+            &facts,
+            &[RedTeamId::RtA, RedTeamId::RtB],
+            "",
+            std::slice::from_ref(&pack),
+        );
+
+        let rt_a = prompts.iter().find(|p| p.id == RedTeamId::RtA).unwrap();
+        let rt_b = prompts.iter().find(|p| p.id == RedTeamId::RtB).unwrap();
+        assert!(
+            rt_a.prompt.contains("Mass assignment"),
+            "RT-A should see laravel pack rule"
+        );
+        assert!(
+            !rt_b.prompt.contains("Mass assignment"),
+            "RT-B should NOT see RT-A-targeted rule"
+        );
+        assert!(
+            !rt_a.prompt.contains("{domain_packs_section}"),
+            "placeholder must be substituted, not leaked"
+        );
+        assert!(
+            !rt_b.prompt.contains("{domain_packs_section}"),
+            "placeholder must be substituted even when section is empty"
+        );
     }
 
     #[test]

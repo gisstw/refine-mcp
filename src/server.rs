@@ -50,6 +50,12 @@ pub struct PrepareAttackParams {
     pub red_count: Option<u8>,
     /// JSON-encoded `SchemaSnapshot` from `extract_migration_facts` (optional)
     pub schema_json: Option<String>,
+    /// Optional list of domain pack names (e.g. `["laravel", "beds24"]`).
+    /// Each pack injects domain-specific rules into the matching red team
+    /// prompts. Resolution: `<project>/.refine/packs/<name>.md` first,
+    /// then refine-mcp's built-in `templates/packs/<name>.md`. Missing
+    /// packs surface as warnings, malformed packs fail the call.
+    pub domain_packs: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -485,6 +491,33 @@ impl RefineServer {
             String::new()
         };
 
+        // Load any requested domain packs (Tier 2 §0.5 / RT-A3): pack-load
+        // failures must surface to the caller, never get silently dropped.
+        // We resolve `<plan_dir>` as the project root for the .refine/packs/
+        // override lookup, falling back to the current dir if the plan is
+        // at the repo root.
+        let domain_pack_names = params.0.domain_packs.clone().unwrap_or_default();
+        let project_root = plan_path
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        let pack_load = if domain_pack_names.is_empty() {
+            refine_mcp::packs::LoadResult::default()
+        } else {
+            refine_mcp::packs::load_packs(&project_root, &domain_pack_names).map_err(|e| {
+                rmcp::ErrorData::invalid_params(
+                    format!("Domain pack load failed: {e}"),
+                    None,
+                )
+            })?
+        };
+        for missing in &pack_load.missing {
+            prepare_warnings.push(format!(
+                "domain pack '{missing}' not found (looked under \
+                 {} and built-in registry); red team will lack that domain context",
+                project_root.join(".refine/packs").display()
+            ));
+        }
+
         let (prompts, auto_dispatch) = if let Some(n) = params.0.red_count {
             // Explicit count: use fixed N teams (RT-A..RT-D in order)
             let count = (n as usize).clamp(2, 4);
@@ -495,23 +528,25 @@ impl RefineServer {
                 refine_mcp::types::RedTeamId::RtD,
             ][..count]
                 .to_vec();
-            let prompts = refine_mcp::prompts::build_red_team_prompts_with_schema(
+            let prompts = refine_mcp::prompts::build_red_team_prompts_with_context(
                 mode,
                 &plan_content,
                 &fact_tables,
                 &ids,
                 &schema_section,
+                &pack_load.packs,
             );
             (prompts, None)
         } else {
             // Auto-select: pick relevant teams based on fact signals
             let dispatch = refine_mcp::prompts::auto_select_red_teams(&fact_tables);
-            let prompts = refine_mcp::prompts::build_red_team_prompts_with_schema(
+            let prompts = refine_mcp::prompts::build_red_team_prompts_with_context(
                 mode,
                 &plan_content,
                 &fact_tables,
                 &dispatch.teams,
                 &schema_section,
+                &pack_load.packs,
             );
             (prompts, Some(dispatch))
         };
