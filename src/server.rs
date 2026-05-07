@@ -540,6 +540,18 @@ impl RefineServer {
             ));
         }
 
+        // §6.1: load state to inject false-positive hints into prompts.
+        // Best-effort — a missing/corrupt state file just means no hints.
+        let fp_hints = match RefineState::load(&plan_path) {
+            Ok(s) => s.render_false_positive_hints(20),
+            Err(e) => {
+                prepare_warnings.push(format!(
+                    "false-positive history unavailable ({e}); proceeding without hints"
+                ));
+                String::new()
+            }
+        };
+
         let (prompts, auto_dispatch) = if let Some(n) = params.0.red_count {
             // Explicit count: use fixed N teams (RT-A..RT-D in order)
             let count = (n as usize).clamp(2, 4);
@@ -550,25 +562,27 @@ impl RefineServer {
                 refine_mcp::types::RedTeamId::RtD,
             ][..count]
                 .to_vec();
-            let prompts = refine_mcp::prompts::build_red_team_prompts_with_context(
+            let prompts = refine_mcp::prompts::build_red_team_prompts_full(
                 mode,
                 &plan_content,
                 &fact_tables,
                 &ids,
                 &schema_section,
                 &pack_load.packs,
+                &fp_hints,
             );
             (prompts, None)
         } else {
             // Auto-select: pick relevant teams based on fact signals
             let dispatch = refine_mcp::prompts::auto_select_red_teams(&fact_tables);
-            let prompts = refine_mcp::prompts::build_red_team_prompts_with_context(
+            let prompts = refine_mcp::prompts::build_red_team_prompts_full(
                 mode,
                 &plan_content,
                 &fact_tables,
                 &dispatch.teams,
                 &schema_section,
                 &pack_load.packs,
+                &fp_hints,
             );
             (prompts, Some(dispatch))
         };
@@ -790,9 +804,13 @@ impl RefineServer {
             .count();
         let high_count = active.len() - fatal_count;
 
-        // Save state (best-effort, don't fail the tool)
+        // Save state (best-effort, don't fail the tool). §6.2: skip
+        // writing when the state has nothing worth keeping — avoids
+        // littering plans/ with empty refine-state-*.json files.
         if let Some(pp) = plan_path {
-            if let Err(e) = state.save(pp) {
+            if state.is_effectively_empty() {
+                append_clean_run_log(pp);
+            } else if let Err(e) = state.save(pp) {
                 parse_errors.push(format!("State save warning: {e}"));
             }
         }
@@ -982,6 +1000,14 @@ impl RefineServer {
                 "manually set via mark_finding (was {prev_status:?})"
             ))
         });
+
+        // §6.1: when flipping to FalsePositive, record an entry in the
+        // long-lived history so subsequent runs warn red teams off
+        // re-reporting the same pattern.
+        if matches!(new_status, refine_mcp::types::FindingStatus::FalsePositive) {
+            let snapshot = finding.clone();
+            state.record_false_positive(&snapshot, params.0.note.clone());
+        }
 
         state.save(plan_path).map_err(|e| {
             rmcp::ErrorData::invalid_params(format!("State save failed: {e}"), None)
@@ -1751,8 +1777,14 @@ fn run_extraction(
                     refine_mcp::facts::registry::ExtractError::Parse { source, .. } => {
                         // Parse failures are extraction errors, not skips —
                         // we did try to extract, the parser failed.
-                        out.errors
-                            .push(format!("Parse error for {file_path_str}: {source}"));
+                        // §6.4: tack on recovery options so the agent can
+                        // pick a next step instead of bouncing back to the
+                        // user.
+                        let opts = err.recovery_options().join("; ");
+                        out.errors.push(format!(
+                            "Parse error for {file_path_str}: {source} \
+                             (recovery options: {opts})"
+                        ));
                     }
                 }
             }
@@ -1892,6 +1924,36 @@ fn build_fingerprint_map(
             ));
             refine_mcp::state::FingerprintMap::new()
         }
+    }
+}
+
+/// Append a one-line "no findings" record to ~/.cache/refine-mcp/clean-runs.log
+/// instead of writing an empty `refine-state-*.json` next to the plan
+/// (§6.2). The agent can still discover that a plan has been reviewed by
+/// reading this log; meanwhile the plans/ directory stays uncluttered.
+fn append_clean_run_log(plan_path: &Path) {
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let dir = PathBuf::from(home).join(".cache/refine-mcp");
+    let _ = std::fs::create_dir_all(&dir);
+    let log = dir.join("clean-runs.log");
+    let now = time::OffsetDateTime::now_utc();
+    let ts = format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        now.year(),
+        now.month() as u8,
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second(),
+    );
+    let line = format!("{ts}\t{}\n", plan_path.display());
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+    {
+        use std::io::Write;
+        let _ = f.write_all(line.as_bytes());
     }
 }
 

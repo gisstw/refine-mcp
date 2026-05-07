@@ -314,6 +314,32 @@ pub fn build_red_team_prompts_with_context(
     schema_section: &str,
     packs: &[crate::packs::DomainPack],
 ) -> Vec<RedTeamPrompt> {
+    build_red_team_prompts_full(
+        mode,
+        plan_content,
+        fact_tables,
+        teams,
+        schema_section,
+        packs,
+        "",
+    )
+}
+
+/// Most general prompt builder. Adds `{false_positive_hints_section}` on
+/// top of [`build_red_team_prompts_with_context`] so callers that have
+/// access to `RefineState` can warn red teams off previously-confirmed
+/// false positives. Pass `""` for the hints section when no FP history
+/// is available.
+#[must_use]
+pub fn build_red_team_prompts_full(
+    mode: RefineMode,
+    plan_content: &str,
+    fact_tables: &[FactTable],
+    teams: &[RedTeamId],
+    schema_section: &str,
+    packs: &[crate::packs::DomainPack],
+    false_positive_hints_section: &str,
+) -> Vec<RedTeamPrompt> {
     let facts_json = serde_json::to_string_pretty(fact_tables).unwrap_or_else(|_| "[]".to_string());
     let steps = extract_plan_steps(plan_content);
     let plan_steps_section = render_plan_steps_section(&steps);
@@ -328,7 +354,11 @@ pub fn build_red_team_prompts_with_context(
                 .replace("{fact_tables}", &facts_json)
                 .replace("{plan_steps_section}", &plan_steps_section)
                 .replace("{schema_section}", schema_section)
-                .replace("{domain_packs_section}", &domain_section);
+                .replace("{domain_packs_section}", &domain_section)
+                .replace(
+                    "{false_positive_hints_section}",
+                    false_positive_hints_section,
+                );
             RedTeamPrompt {
                 id: *id,
                 prompt,

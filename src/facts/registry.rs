@@ -39,6 +39,33 @@ pub enum ExtractError {
 }
 
 impl ExtractError {
+    /// Suggest concrete next steps the agent can take when extraction
+    /// failed. Returned in addition to the error message so the agent
+    /// can autonomously try a recovery without bouncing back to the
+    /// user (§6.4 parse error options).
+    #[must_use]
+    pub fn recovery_options(&self) -> Vec<&'static str> {
+        match self {
+            Self::Unsupported { .. } => vec![
+                "skip this file with a warning",
+                "fall back to textual heuristic scan (extract_method=Textual)",
+                "add a tree-sitter grammar for this extension",
+            ],
+            Self::NoExtension => vec![
+                "rename the file to include an extension",
+                "skip this file with a warning",
+            ],
+            Self::Parse { .. } => vec![
+                "fall back to textual heuristic scan (extract_method=Textual)",
+                "split the file at language boundaries (e.g. PHP `__halt_compiler__`, Vue SFC blocks) and retry",
+                "skip this file and continue with the remaining inputs",
+                "report the parse error upstream so the grammar can be improved",
+            ],
+        }
+    }
+}
+
+impl ExtractError {
     /// Best-effort extension name, used by callers when logging.
     /// Returns empty string for `NoExtension`.
     #[must_use]
@@ -133,6 +160,10 @@ pub fn extract_for_path(path: &Path, source: &str) -> Result<ExtractResult, Extr
             crate::facts::json_lang::extract_json_facts(path, source),
             ExtractMethod::TreeSitter,
         ),
+        "vue" => (
+            crate::facts::vue::extract_vue_facts(path, source),
+            ExtractMethod::TreeSitter,
+        ),
         _ => (
             crate::facts::textual::extract_textual_facts(path, source),
             ExtractMethod::Textual,
@@ -180,5 +211,26 @@ mod tests {
         let result = extract_for_path(&PathBuf::from("test.md"), "# Heading\n");
         let r = result.expect("markdown extractor should accept simple input");
         assert_eq!(r.method, ExtractMethod::TreeSitter);
+    }
+
+    #[test]
+    fn parse_error_recovery_options_are_actionable() {
+        let err = ExtractError::Parse {
+            ext: "php".to_string(),
+            source: anyhow::anyhow!("syntax error at token X"),
+        };
+        let opts = err.recovery_options();
+        assert!(!opts.is_empty(), "parse errors must have recovery options");
+        assert!(
+            opts.iter().any(|o| o.contains("textual")),
+            "should suggest textual fallback"
+        );
+    }
+
+    #[test]
+    fn no_extension_recovery_options_include_skip_and_rename() {
+        let opts = ExtractError::NoExtension.recovery_options();
+        assert!(opts.iter().any(|o| o.contains("rename")));
+        assert!(opts.iter().any(|o| o.contains("skip")));
     }
 }

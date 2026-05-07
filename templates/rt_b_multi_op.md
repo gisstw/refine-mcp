@@ -47,6 +47,8 @@ Look for these pattern combinations in the fact tables:
 - Do not report style issues or "suggestions for improvement"
 - If the fact tables have no suspicious pattern combinations, report "No FATAL/HIGH issues found from this angle"
 
+{false_positive_hints_section}
+
 {domain_packs_section}
 
 {plan_steps_section}

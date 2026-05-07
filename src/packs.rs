@@ -267,8 +267,20 @@ Some intro text.
     }
 
     fn tempdir() -> std::path::PathBuf {
+        // Each call returns a unique, fresh dir so parallel tests don't
+        // race over the same path.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let mut p = std::env::temp_dir();
-        p.push(format!("refine-pack-test-{}", std::process::id()));
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        p.push(format!(
+            "refine-pack-test-{}-{}-{n}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p

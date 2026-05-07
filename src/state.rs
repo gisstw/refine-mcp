@@ -20,6 +20,24 @@ pub struct RefineState {
     /// "Tier 2 補強 — 首次保護期".
     #[serde(default)]
     pub schema_version: u8,
+    /// Findings the user has confirmed are false positives. Carried as a
+    /// separate, append-only history (instead of just keeping the
+    /// `Finding` with status `FalsePositive`) so we can prune resolved
+    /// findings without losing the "don't report this again" signal.
+    /// Plan §6.1.
+    #[serde(default)]
+    pub false_positive_history: Vec<FalsePositiveEntry>,
+}
+
+/// Compact record of a finding that was marked false positive at some
+/// point, used to keep `prepare_attack` from producing the same noise on
+/// subsequent runs.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct FalsePositiveEntry {
+    pub fingerprint: Option<String>,
+    pub title: String,
+    pub category: Option<String>,
+    pub note: Option<String>,
 }
 
 /// Map a finding's source file to all known fingerprint entries in that file.
@@ -161,6 +179,61 @@ impl RefineState {
 
         self.run_count += 1;
         self.schema_version = self.schema_version.saturating_add(1).min(2);
+    }
+
+    /// Record a finding as a false positive in the long-lived history,
+    /// even if the original `Finding` is later pruned. Idempotent — a
+    /// duplicate (matching `fingerprint` + `title`) is dropped.
+    pub fn record_false_positive(&mut self, finding: &Finding, note: Option<String>) {
+        let entry = FalsePositiveEntry {
+            fingerprint: finding.fingerprint.clone(),
+            title: finding.title.clone(),
+            category: finding
+                .symbol_path
+                .as_ref()
+                .and_then(|s| s.strip_prefix("category:").map(str::to_owned)),
+            note,
+        };
+        if !self.false_positive_history.iter().any(|e| {
+            e.fingerprint == entry.fingerprint && e.title == entry.title
+        }) {
+            self.false_positive_history.push(entry);
+        }
+    }
+
+    /// Render the FP history as a prompt fragment red teams can read.
+    /// Empty when there's no history. Limited to the most recent
+    /// `max` entries to keep prompts compact.
+    #[must_use]
+    pub fn render_false_positive_hints(&self, max: usize) -> String {
+        use std::fmt::Write;
+        if self.false_positive_history.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from(
+            "\n## Known false positives (do NOT re-report)\n\nThese findings were marked false positive in past runs and should not be reported again unless the underlying code has materially changed:\n\n",
+        );
+        let n = self.false_positive_history.len().min(max);
+        for entry in self.false_positive_history.iter().rev().take(n) {
+            let cat = entry.category.as_deref().unwrap_or("uncategorized");
+            let note = entry
+                .note
+                .as_deref()
+                .map_or(String::new(), |n| format!(" — {n}"));
+            let _ = writeln!(out, "- \"{}\" ({cat}){note}", entry.title);
+        }
+        out
+    }
+
+    /// True when there's nothing worth persisting: no findings, no FP
+    /// history, and we're at the default schema version. Used by
+    /// `finalize_refinement` to avoid spamming `plans/` with empty
+    /// `refine-state-*.json` files (§6.2).
+    #[must_use]
+    pub fn is_effectively_empty(&self) -> bool {
+        self.findings.is_empty()
+            && self.false_positive_history.is_empty()
+            && self.schema_version == 0
     }
 
     /// Get active findings (excluding Fixed and `FalsePositive`).
@@ -509,6 +582,54 @@ mod tests {
             Some("not exploitable in this context")
         );
         std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn record_false_positive_is_idempotent() {
+        let mut state = RefineState::default();
+        let mut f = make_finding("F1", "a.php", "issue A");
+        f.fingerprint = Some("hash".to_string());
+        state.findings.push(f.clone());
+
+        state.record_false_positive(&f, Some("not exploitable".into()));
+        state.record_false_positive(&f, Some("not exploitable".into()));
+        state.record_false_positive(&f, Some("different note".into()));
+        // Same fingerprint+title is dedup'd regardless of note.
+        assert_eq!(state.false_positive_history.len(), 1);
+    }
+
+    #[test]
+    fn render_false_positive_hints_includes_recent_titles() {
+        let mut state = RefineState::default();
+        for i in 0..5 {
+            let mut f = make_finding(
+                &format!("F{i}"),
+                "a.php",
+                &format!("title {i}"),
+            );
+            f.fingerprint = Some(format!("hash-{i}"));
+            state.record_false_positive(&f, None);
+        }
+        let hints = state.render_false_positive_hints(3);
+        assert!(hints.contains("title 4"));
+        assert!(hints.contains("title 3"));
+        assert!(hints.contains("title 2"));
+        assert!(!hints.contains("title 1"), "max=3 should skip older entries");
+    }
+
+    #[test]
+    fn is_effectively_empty_recognises_fresh_state() {
+        let state = RefineState::default();
+        assert!(state.is_effectively_empty());
+    }
+
+    #[test]
+    fn is_effectively_empty_false_when_history_present() {
+        let mut state = RefineState::default();
+        let mut f = make_finding("F1", "a.php", "issue A");
+        f.fingerprint = Some("h".to_string());
+        state.record_false_positive(&f, None);
+        assert!(!state.is_effectively_empty());
     }
 
     #[test]

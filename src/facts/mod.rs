@@ -13,4 +13,5 @@ pub mod textual;
 pub mod toml_lang;
 pub mod types;
 pub mod typescript;
+pub mod vue;
 pub mod yaml;
