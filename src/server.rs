@@ -453,9 +453,9 @@ impl RefineServer {
                 "plan_mentioned": plan_mentioned.iter().take(20).collect::<Vec<_>>(),
                 "plan_callees_found": plan_callees.len(),
                 "shared_mutation_targets": plan_mutation_targets.iter().take(10).collect::<Vec<_>>(),
-                "reduction_percent": if original_fn_count > 0 {
-                    100 - (filtered_fn_count * 100 / original_fn_count)
-                } else { 0 },
+                "reduction_percent": (filtered_fn_count * 100)
+                    .checked_div(original_fn_count)
+                    .map_or(0, |pct| 100 - pct),
                 "aggressive_warning": original_fn_count > 0 && filtered_fn_count * 5 < original_fn_count,
             });
 
