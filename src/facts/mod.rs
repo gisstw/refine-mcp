@@ -1,6 +1,7 @@
 pub mod bash;
 pub mod blade;
 pub mod blast_radius;
+pub mod json_lang;
 pub mod markdown;
 pub mod migration;
 pub mod php;
@@ -9,6 +10,7 @@ pub mod registry;
 pub mod rust_lang;
 pub mod sql;
 pub mod textual;
+pub mod toml_lang;
 pub mod types;
 pub mod typescript;
 pub mod yaml;

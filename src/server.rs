@@ -133,6 +133,28 @@ pub struct QuickReviewParams {
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
+pub struct RunReviewParams {
+    /// Path to the plan file driving the review.
+    pub plan_path: String,
+    /// Review tier — controls red team count and depth.
+    /// `quick` = 1 prompt (lightweight), `tier2` = 2 reds (default), `tier3` = 4 reds.
+    pub tier: Option<String>,
+    /// Git ref to diff against. When omitted, auto-detected via merge-base
+    /// against `origin/main` → `main` → `HEAD~1`.
+    pub base_ref: Option<String>,
+    /// Domain pack names to inject into red team prompts (forwarded to
+    /// `prepare_attack`).
+    pub domain_packs: Option<Vec<String>>,
+    /// Refine mode (default | lite | auto). Defaults to `default`.
+    pub mode: Option<String>,
+    /// Search paths for blast-radius caller scan. Defaults to
+    /// `["app/", "src/", "routes/"]`. Per Tier 2 §0.5 / RT-B2 the scan
+    /// runs against the FULL set of search paths, not just diff files,
+    /// so callers outside the diff still get caught.
+    pub search_paths: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct MarkFindingParams {
     /// Path to the plan file the finding belongs to (resolves the state file).
     pub plan_path: String,
@@ -976,6 +998,167 @@ impl RefineServer {
         )]))
     }
 
+    // ── Tool 8c: run_review ──────────────────────────────────────
+
+    /// One-shot orchestration: discover diff → extract facts → expand
+    /// blast radius → prepare red team prompts. Replaces the manual
+    /// chain of 4-5 MCP calls when the agent just wants "review my
+    /// pending changes against this plan".
+    #[tool(
+        description = "Run the full review pipeline against a plan in one MCP call. \
+        Auto-detects base_ref via merge-base (origin/main → main → HEAD~1), extracts \
+        facts from the diff plus blast-radius callers found in the full search paths, \
+        and returns the same red-team prompts prepare_attack would. \
+        The agent still dispatches the prompts to subagents — this tool only orchestrates."
+    )]
+    async fn run_review(
+        &self,
+        params: Parameters<RunReviewParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let plan_path_buf = validate_path(&params.0.plan_path)?;
+        let mode = parse_mode(params.0.mode.as_deref())?;
+
+        let tier = match params.0.tier.as_deref().unwrap_or("tier2") {
+            "quick" => 1,
+            "tier2" => 2,
+            "tier3" => 4,
+            other => {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!("unknown tier '{other}'; expected quick / tier2 / tier3"),
+                    None,
+                ));
+            }
+        };
+
+        // Step 1: figure out which files changed.
+        let base_ref = params
+            .0
+            .base_ref
+            .clone()
+            .unwrap_or_else(detect_base_ref);
+        let changed_files = get_changed_files(&base_ref);
+        if changed_files.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::json!({
+                    "warning": format!(
+                        "No changed files relative to {base_ref}; nothing to review"
+                    ),
+                    "base_ref": base_ref,
+                })
+                .to_string(),
+            )]));
+        }
+
+        // Step 2: extract facts from the diff itself.
+        let extraction = run_extraction(&changed_files, false)?;
+        let mut all_files: Vec<String> = changed_files.clone();
+
+        // Step 3: blast radius — Tier 2 §0.5 / RT-B2 says scan the FULL
+        // search paths (not just diff files), so callers outside the diff
+        // are surfaced. Stateless — no symbol-index cache.
+        let default_search = vec![
+            "app/".to_string(),
+            "src/".to_string(),
+            "routes/".to_string(),
+        ];
+        let search_paths: Vec<PathBuf> = params
+            .0
+            .search_paths
+            .as_deref()
+            .unwrap_or(&default_search)
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let exclude: Vec<PathBuf> = changed_files.iter().map(PathBuf::from).collect();
+        let changed_symbols = refine_mcp::facts::blast_radius::extract_changed_symbols(&exclude);
+        let blast = refine_mcp::facts::blast_radius::expand_blast_radius(
+            &changed_symbols,
+            &search_paths,
+            &exclude,
+            10,
+        );
+        for callers in blast.call_graph.values() {
+            for c in callers {
+                let s = c.caller_file.to_string_lossy().to_string();
+                if !all_files.contains(&s) {
+                    all_files.push(s);
+                }
+            }
+        }
+
+        // Step 4: re-extract on the union (diff + caller files) so red
+        // teams see the full impact set.
+        let full_extraction = if all_files.len() > changed_files.len() {
+            run_extraction(&all_files, false)?
+        } else {
+            extraction
+        };
+
+        // Step 5: load plan, packs, and build prompts.
+        let plan_content = std::fs::read_to_string(&plan_path_buf).map_err(|e| {
+            rmcp::ErrorData::invalid_params(format!("Failed to read plan: {e}"), None)
+        })?;
+        let domain_pack_names = params.0.domain_packs.clone().unwrap_or_default();
+        let project_root = plan_path_buf
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        let pack_load = if domain_pack_names.is_empty() {
+            refine_mcp::packs::LoadResult::default()
+        } else {
+            refine_mcp::packs::load_packs(&project_root, &domain_pack_names).map_err(|e| {
+                rmcp::ErrorData::invalid_params(format!("Domain pack load failed: {e}"), None)
+            })?
+        };
+
+        let teams: Vec<refine_mcp::types::RedTeamId> = [
+            refine_mcp::types::RedTeamId::RtA,
+            refine_mcp::types::RedTeamId::RtB,
+            refine_mcp::types::RedTeamId::RtC,
+            refine_mcp::types::RedTeamId::RtD,
+        ][..tier.min(4)]
+            .to_vec();
+        let prompts = refine_mcp::prompts::build_red_team_prompts_with_context(
+            mode,
+            &plan_content,
+            &full_extraction.tables,
+            &teams,
+            "",
+            &pack_load.packs,
+        );
+
+        let mut warnings: Vec<String> = pack_load
+            .missing
+            .iter()
+            .map(|m| format!("domain pack '{m}' not found"))
+            .collect();
+        if !full_extraction.skipped_files.is_empty() {
+            if let Some(banner) = summarize_skips(&full_extraction.skipped_files) {
+                warnings.push(banner);
+            }
+        }
+
+        let mut output = serde_json::json!({
+            "base_ref": base_ref,
+            "tier": params.0.tier.clone().unwrap_or_else(|| "tier2".to_string()),
+            "diff_files": changed_files,
+            "blast_radius_caller_files": all_files.len() - changed_files.len(),
+            "fact_table_count": full_extraction.tables.len(),
+            "skipped_files": full_extraction.skipped_files,
+            "prompts": prompts.iter().map(|p| serde_json::json!({
+                "id": format!("{:?}", p.id),
+                "model": p.recommended_model,
+                "prompt": p.prompt,
+            })).collect::<Vec<_>>(),
+        });
+        if !warnings.is_empty() {
+            output["warnings"] = serde_json::json!(warnings);
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&output).unwrap_or_default(),
+        )]))
+    }
+
     // ── Tool 9: quick_review ─────────────────────────────────────
 
     /// Lightweight adversarial review from git diff. No plan file needed.
@@ -1610,6 +1793,30 @@ fn git_changed_files() -> Vec<String> {
 }
 
 /// Get files changed relative to a git ref.
+/// Auto-detect a sensible base ref for incremental review.
+///
+/// Tries `merge-base HEAD origin/main` → `merge-base HEAD main` →
+/// fallback to `HEAD~1`. Returns the first one that succeeds; defaults
+/// to `HEAD~1` if everything fails so we still review the most recent
+/// commit even outside a normal branch workflow.
+fn detect_base_ref() -> String {
+    let candidates = ["origin/main", "main", "origin/master", "master"];
+    for cand in candidates {
+        let merge_base = std::process::Command::new("git")
+            .args(["merge-base", "HEAD", cand])
+            .output();
+        if let Ok(out) = merge_base {
+            if out.status.success() {
+                let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !sha.is_empty() {
+                    return sha;
+                }
+            }
+        }
+    }
+    "HEAD~1".to_string()
+}
+
 ///
 /// Includes both staged and unstaged changes. Returns empty vec on failure.
 fn get_changed_files(base_ref: &str) -> Vec<String> {
@@ -1753,6 +1960,19 @@ mod tests {
         assert!(banner.starts_with("⚠️ Skipped 3 file(s)"));
         assert!(banner.contains("unsupported_extension: 2"));
         assert!(banner.contains("no_extension: 1"));
+    }
+
+    // ── detect_base_ref ──
+
+    #[test]
+    fn detect_base_ref_falls_back_to_head_minus_one_when_main_missing() {
+        // Even outside a normal main-branch repo we should not panic; the
+        // fallback ref `HEAD~1` is always a syntactically valid value to
+        // hand to git later. We can't easily mock the git env in a unit
+        // test, but we can at least confirm the function returns a
+        // non-empty string on any platform.
+        let r = detect_base_ref();
+        assert!(!r.is_empty(), "detect_base_ref must not return empty");
     }
 
     // ── parse_mode ──

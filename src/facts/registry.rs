@@ -125,6 +125,14 @@ pub fn extract_for_path(path: &Path, source: &str) -> Result<ExtractResult, Extr
             crate::facts::bash::extract_bash_facts(path, source),
             ExtractMethod::TreeSitter,
         ),
+        "toml" => (
+            crate::facts::toml_lang::extract_toml_facts(path, source),
+            ExtractMethod::TreeSitter,
+        ),
+        "json" => (
+            crate::facts::json_lang::extract_json_facts(path, source),
+            ExtractMethod::TreeSitter,
+        ),
         _ => (
             crate::facts::textual::extract_textual_facts(path, source),
             ExtractMethod::Textual,

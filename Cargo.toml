@@ -61,6 +61,7 @@ sha2 = "0.11.0"
 tree-sitter-sequel = "0.3.11"
 tree-sitter-yaml = "0.7.2"
 tree-sitter-bash = "0.25.1"
+tree-sitter-toml-ng = "0.7.0"
 
 [dev-dependencies]
 tempfile = "3"
