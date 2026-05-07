@@ -115,7 +115,10 @@ fn scan_textual(source: &str, warnings: &mut Vec<String>) {
     }
 
     if !has_set_e {
-        warnings.insert(0, "Script does not set -e; failed commands won't abort".to_string());
+        warnings.insert(
+            0,
+            "Script does not set -e; failed commands won't abort".to_string(),
+        );
     }
     if !has_set_u {
         warnings.insert(
@@ -169,7 +172,11 @@ mod tests {
         let table = extract_bash_facts(&PathBuf::from("script.sh"), src).unwrap();
         let has_e = table.warnings.iter().any(|w| w.contains("set -e"));
         let has_u = table.warnings.iter().any(|w| w.contains("set -u"));
-        assert!(has_e && has_u, "expected both strict-mode warnings, got: {:?}", table.warnings);
+        assert!(
+            has_e && has_u,
+            "expected both strict-mode warnings, got: {:?}",
+            table.warnings
+        );
     }
 
     #[test]
@@ -177,7 +184,10 @@ mod tests {
         let src = "set -euo pipefail\necho 'hi'\n";
         let table = extract_bash_facts(&PathBuf::from("script.sh"), src).unwrap();
         assert!(
-            !table.warnings.iter().any(|w| w.contains("set -e") || w.contains("set -u")),
+            !table
+                .warnings
+                .iter()
+                .any(|w| w.contains("set -e") || w.contains("set -u")),
             "set -euo should suppress strict-mode warnings, got: {:?}",
             table.warnings
         );

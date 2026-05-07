@@ -67,7 +67,12 @@ fn full_v0_to_v2_upgrade_chain() {
         vec![((10, 30), "CartService::charge", "abcdef0123456789")],
     );
     state.merge_findings(
-        vec![finding("F1", "src/cart.php", (15, 20), "missing transaction")],
+        vec![finding(
+            "F1",
+            "src/cart.php",
+            (15, 20),
+            "missing transaction",
+        )],
         &map,
     );
     assert_eq!(state.schema_version, 1, "first run: v0 → v1");

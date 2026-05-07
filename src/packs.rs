@@ -70,14 +70,14 @@ fn builtin_pack(name: &str) -> Option<&'static str> {
 pub fn load_packs(project_root: &Path, requested: &[String]) -> Result<LoadResult> {
     let mut result = LoadResult::default();
     for name in requested {
-        let user_path = project_root.join(".refine/packs").join(format!("{name}.md"));
+        let user_path = project_root
+            .join(".refine/packs")
+            .join(format!("{name}.md"));
         if user_path.exists() {
-            let content = std::fs::read_to_string(&user_path).with_context(|| {
-                format!("reading user pack {}", user_path.display())
-            })?;
-            let pack = parse_pack(name, &content, PackSource::User).with_context(|| {
-                format!("parsing user pack {}", user_path.display())
-            })?;
+            let content = std::fs::read_to_string(&user_path)
+                .with_context(|| format!("reading user pack {}", user_path.display()))?;
+            let pack = parse_pack(name, &content, PackSource::User)
+                .with_context(|| format!("parsing user pack {}", user_path.display()))?;
             result.packs.push(pack);
             continue;
         }
@@ -104,7 +104,11 @@ pub fn render_for_team(packs: &[DomainPack], target: RedTeamId) -> String {
             if rules.is_empty() {
                 continue;
             }
-            let mut block = format!("\n### {} (domain pack: {})\n", pack.name, source_label(pack.source));
+            let mut block = format!(
+                "\n### {} (domain pack: {})\n",
+                pack.name,
+                source_label(pack.source)
+            );
             for r in rules {
                 let _ = writeln!(block, "- {r}");
             }
@@ -151,7 +155,10 @@ fn parse_pack(name: &str, content: &str, source: PackSource) -> Result<DomainPac
         }
         let Some(team) = current else { continue };
         let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+        if let Some(rest) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
             let rule = rest.trim().to_string();
             if !rule.is_empty() {
                 sections.entry(team).or_default().push(rule);
@@ -223,43 +230,31 @@ Some intro text.
         writeln!(f, "## RT-A\n- user-supplied rule\n").unwrap();
         let result = load_packs(&tmp, &["laravel".to_string()]).unwrap();
         assert_eq!(result.packs[0].source, PackSource::User);
-        assert!(result.packs[0].sections[&RedTeamId::RtA]
-            .iter()
-            .any(|r| r.contains("user-supplied")));
+        assert!(
+            result.packs[0].sections[&RedTeamId::RtA]
+                .iter()
+                .any(|r| r.contains("user-supplied"))
+        );
     }
 
     #[test]
     fn load_packs_collects_missing_names() {
         let tmp = tempdir();
-        let result = load_packs(
-            &tmp,
-            &["laravel".to_string(), "nonexistent".to_string()],
-        )
-        .unwrap();
+        let result = load_packs(&tmp, &["laravel".to_string(), "nonexistent".to_string()]).unwrap();
         assert_eq!(result.packs.len(), 1);
         assert_eq!(result.missing, vec!["nonexistent"]);
     }
 
     #[test]
     fn render_for_team_skips_packs_without_matching_section() {
-        let pack = parse_pack(
-            "x",
-            "## RT-A\n- only RT-A rule\n",
-            PackSource::Builtin,
-        )
-        .unwrap();
+        let pack = parse_pack("x", "## RT-A\n- only RT-A rule\n", PackSource::Builtin).unwrap();
         let rendered = render_for_team(&[pack], RedTeamId::RtB);
         assert!(rendered.is_empty(), "RT-B has no rules, expected empty");
     }
 
     #[test]
     fn render_for_team_includes_pack_name_and_source() {
-        let pack = parse_pack(
-            "laravel",
-            "## RT-A\n- mass assignment\n",
-            PackSource::User,
-        )
-        .unwrap();
+        let pack = parse_pack("laravel", "## RT-A\n- mass assignment\n", PackSource::User).unwrap();
         let rendered = render_for_team(&[pack], RedTeamId::RtA);
         assert!(rendered.contains("laravel"));
         assert!(rendered.contains("user"));

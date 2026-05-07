@@ -526,10 +526,7 @@ impl RefineServer {
             refine_mcp::packs::LoadResult::default()
         } else {
             refine_mcp::packs::load_packs(&project_root, &domain_pack_names).map_err(|e| {
-                rmcp::ErrorData::invalid_params(
-                    format!("Domain pack load failed: {e}"),
-                    None,
-                )
+                rmcp::ErrorData::invalid_params(format!("Domain pack load failed: {e}"), None)
             })?
         };
         for missing in &pack_load.missing {
@@ -783,10 +780,8 @@ impl RefineServer {
             }),
             None => RefineState::default(),
         };
-        let fingerprints = build_fingerprint_map(
-            params.0.fact_tables_json.as_deref(),
-            &mut parse_errors,
-        );
+        let fingerprints =
+            build_fingerprint_map(params.0.fact_tables_json.as_deref(), &mut parse_errors);
         state.merge_findings(deduped.clone(), &fingerprints);
         state.last_run = Some(date_today());
 
@@ -1057,11 +1052,7 @@ impl RefineServer {
         };
 
         // Step 1: figure out which files changed.
-        let base_ref = params
-            .0
-            .base_ref
-            .clone()
-            .unwrap_or_else(detect_base_ref);
+        let base_ref = params.0.base_ref.clone().unwrap_or_else(detect_base_ref);
         let changed_files = get_changed_files(&base_ref);
         if changed_files.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -1932,7 +1923,9 @@ fn build_fingerprint_map(
 /// (§6.2). The agent can still discover that a plan has been reviewed by
 /// reading this log; meanwhile the plans/ directory stays uncluttered.
 fn append_clean_run_log(plan_path: &Path) {
-    let Some(home) = std::env::var_os("HOME") else { return };
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
     let dir = PathBuf::from(home).join(".cache/refine-mcp");
     let _ = std::fs::create_dir_all(&dir);
     let log = dir.join("clean-runs.log");
@@ -1960,18 +1953,28 @@ fn append_clean_run_log(plan_path: &Path) {
 /// Best-effort append to ~/.cache/refine-mcp/format-issues.log.
 /// Silently ignores all errors — logging must not break tool execution.
 fn log_format_issue(kind: &str, ext: &str, file_path: &str, detail: &str) {
-    let Some(home) = std::env::var_os("HOME") else { return };
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
     let dir = PathBuf::from(home).join(".cache/refine-mcp");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("format-issues.log");
     let now = time::OffsetDateTime::now_utc();
     let ts = format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        now.year(), now.month() as u8, now.day(),
-        now.hour(), now.minute(), now.second()
+        now.year(),
+        now.month() as u8,
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
     );
     let line = format!("{ts}\t{kind}\t.{ext}\t{file_path}\t{detail}\n");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         use std::io::Write;
         let _ = f.write_all(line.as_bytes());
     }

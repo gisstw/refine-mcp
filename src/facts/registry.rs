@@ -96,10 +96,7 @@ impl ExtractError {
 pub fn extract_for_path(path: &Path, source: &str) -> Result<ExtractResult, ExtractError> {
     // `.blade.php` must beat the bare `.php` arm because `path.extension()`
     // strips only the trailing `.php`, hiding the Blade nature.
-    if path
-        .to_string_lossy()
-        .ends_with(".blade.php")
-    {
+    if path.to_string_lossy().ends_with(".blade.php") {
         return crate::facts::blade::extract_blade_facts(path, source)
             .map(|mut t| {
                 t.fingerprints = crate::fingerprint::compute_for_table(&t, source);

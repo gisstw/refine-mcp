@@ -61,9 +61,7 @@ fn scan_package_json(value: &Value, warnings: &mut Vec<String>) {
         for (name, ver) in deps {
             if let Value::String(s) = ver {
                 if s == "*" || s.starts_with("git") {
-                    warnings.push(format!(
-                        "{key}.{name} = \"{s}\" — unpinned/git dependency"
-                    ));
+                    warnings.push(format!("{key}.{name} = \"{s}\" — unpinned/git dependency"));
                 }
             }
         }

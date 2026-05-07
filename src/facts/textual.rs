@@ -30,8 +30,10 @@ static SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {
     // Keep this conservative — false positives drown out real signals.
     // Match `<key>=<value>` style assignments where the key looks
     // sensitive and the value is at least 12 chars of non-whitespace.
-    Regex::new(r#"(?i)(?:api[_-]?key|secret|password|token|bearer)[\s:=]+["']?([A-Za-z0-9+/=_\-]{12,})"#)
-        .unwrap()
+    Regex::new(
+        r#"(?i)(?:api[_-]?key|secret|password|token|bearer)[\s:=]+["']?([A-Za-z0-9+/=_\-]{12,})"#,
+    )
+    .unwrap()
 });
 
 /// Run a heuristic textual scan and return a `FactTable` tagged with
@@ -86,8 +88,7 @@ mod tests {
 
     #[test]
     fn textual_marks_extract_method() {
-        let table =
-            extract_textual_facts(&PathBuf::from("a.lua"), "print('hi')\n").unwrap();
+        let table = extract_textual_facts(&PathBuf::from("a.lua"), "print('hi')\n").unwrap();
         assert_eq!(table.extract_method, ExtractMethod::Textual);
         assert!(table.functions.is_empty());
     }

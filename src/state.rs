@@ -106,8 +106,7 @@ impl RefineState {
         new_findings: Vec<Finding>,
         current_fingerprints: &FingerprintMap,
     ) {
-        let auto_mark_enabled =
-            self.schema_version >= 2 && !current_fingerprints.is_empty();
+        let auto_mark_enabled = self.schema_version >= 2 && !current_fingerprints.is_empty();
 
         if auto_mark_enabled {
             for existing in &mut self.findings {
@@ -122,8 +121,7 @@ impl RefineState {
                     .is_some_and(|entries| entries.iter().any(|e| e.content_hash == fp));
                 if !still_present {
                     existing.status = FindingStatus::Fixed;
-                    existing.auto_marked =
-                        Some("fingerprint not found in latest run".to_string());
+                    existing.auto_marked = Some("fingerprint not found in latest run".to_string());
                 }
             }
         }
@@ -194,9 +192,11 @@ impl RefineState {
                 .and_then(|s| s.strip_prefix("category:").map(str::to_owned)),
             note,
         };
-        if !self.false_positive_history.iter().any(|e| {
-            e.fingerprint == entry.fingerprint && e.title == entry.title
-        }) {
+        if !self
+            .false_positive_history
+            .iter()
+            .any(|e| e.fingerprint == entry.fingerprint && e.title == entry.title)
+        {
             self.false_positive_history.push(entry);
         }
     }
@@ -335,7 +335,10 @@ mod tests {
     #[test]
     fn merge_updates_existing_new_findings() {
         let mut state = RefineState::default();
-        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")], &FingerprintMap::new());
+        state.merge_findings(
+            vec![make_finding("F1", "a.php", "issue A")],
+            &FingerprintMap::new(),
+        );
 
         // Second run with same finding but updated
         let mut updated = make_finding("F1-new", "a.php", "issue A");
@@ -352,7 +355,10 @@ mod tests {
     #[test]
     fn merge_preserves_fixed_status() {
         let mut state = RefineState::default();
-        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")], &FingerprintMap::new());
+        state.merge_findings(
+            vec![make_finding("F1", "a.php", "issue A")],
+            &FingerprintMap::new(),
+        );
 
         // Mark as fixed
         state.findings[0].status = FindingStatus::Fixed;
@@ -369,10 +375,13 @@ mod tests {
     #[test]
     fn active_findings_excludes_fixed() {
         let mut state = RefineState::default();
-        state.merge_findings(vec![
-            make_finding("F1", "a.php", "issue A"),
-            make_finding("F2", "b.php", "issue B"),
-        ], &FingerprintMap::new());
+        state.merge_findings(
+            vec![
+                make_finding("F1", "a.php", "issue A"),
+                make_finding("F2", "b.php", "issue B"),
+            ],
+            &FingerprintMap::new(),
+        );
 
         state.findings[0].status = FindingStatus::Fixed;
 
@@ -384,7 +393,10 @@ mod tests {
     #[test]
     fn roundtrip_json() {
         let mut state = RefineState::default();
-        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")], &FingerprintMap::new());
+        state.merge_findings(
+            vec![make_finding("F1", "a.php", "issue A")],
+            &FingerprintMap::new(),
+        );
         state.last_run = Some("2026-02-27".to_string());
 
         let json = serde_json::to_string(&state).unwrap();
@@ -416,7 +428,10 @@ mod tests {
     fn save_to_atomic_roundtrip() {
         let tmp = std::env::temp_dir().join("refine_test_atomic.json");
         let mut state = RefineState::default();
-        state.merge_findings(vec![make_finding("F1", "a.php", "issue A")], &FingerprintMap::new());
+        state.merge_findings(
+            vec![make_finding("F1", "a.php", "issue A")],
+            &FingerprintMap::new(),
+        );
         state.save_to(&tmp).unwrap();
 
         let loaded = RefineState::load_from(&tmp).unwrap();
@@ -602,11 +617,7 @@ mod tests {
     fn render_false_positive_hints_includes_recent_titles() {
         let mut state = RefineState::default();
         for i in 0..5 {
-            let mut f = make_finding(
-                &format!("F{i}"),
-                "a.php",
-                &format!("title {i}"),
-            );
+            let mut f = make_finding(&format!("F{i}"), "a.php", &format!("title {i}"));
             f.fingerprint = Some(format!("hash-{i}"));
             state.record_false_positive(&f, None);
         }
@@ -614,7 +625,10 @@ mod tests {
         assert!(hints.contains("title 4"));
         assert!(hints.contains("title 3"));
         assert!(hints.contains("title 2"));
-        assert!(!hints.contains("title 1"), "max=3 should skip older entries");
+        assert!(
+            !hints.contains("title 1"),
+            "max=3 should skip older entries"
+        );
     }
 
     #[test]

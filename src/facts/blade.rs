@@ -24,13 +24,11 @@ use super::{php, types::FactTable};
 
 /// `{{ expr }}` → `<?=expr;?>` (always equal-length: both wrappers are 7
 /// characters, so 1-char inner stays 1-char inner).
-static ECHO_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\{\{\s*(.+?)\s*\}\}").unwrap());
+static ECHO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{\s*(.+?)\s*\}\}").unwrap());
 
 /// `{!! expr !!}` → `<?= expr ;?>` (9-char wrappers on each side; pad inner
 /// with two trailing spaces before `;` to keep length equal).
-static RAW_ECHO_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\{!!\s*(.+?)\s*!!\}").unwrap());
+static RAW_ECHO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{!!\s*(.+?)\s*!!\}").unwrap());
 
 /// `@directive` and `@directive(args)`. Both become equal-length
 /// runs of spaces so the line's byte length is preserved while the PHP

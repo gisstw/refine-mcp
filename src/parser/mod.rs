@@ -204,12 +204,7 @@ fn raw_findings_to_findings(raw: Vec<RawFinding>) -> anyhow::Result<Vec<Finding>
             Some("RT-D" | "RTD") => RedTeamId::RtD,
             _ => RedTeamId::RtA,
         };
-        let mut finding = Finding::new(
-            severity,
-            r.title,
-            source,
-            PathBuf::from(r.file_path),
-        );
+        let mut finding = Finding::new(severity, r.title, source, PathBuf::from(r.file_path));
         finding.id = format!("RT-{:03}", i + 1);
         finding.line_range = r.line_range;
         finding.problem = r.problem;

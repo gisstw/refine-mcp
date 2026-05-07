@@ -10,8 +10,8 @@ use super::types::{
 /// Extract structure from a Markdown file.
 ///
 /// Since Markdown has no code symbols, we represent each `##`-level section
-/// as a synthetic `FunctionFact` (name = heading text, line_range covers the
-/// section body). Section bodies are stored in `FactTable.warnings` so the
+/// as a synthetic `FunctionFact` (name = heading text, `line_range` covers
+/// the section body). Section bodies are stored in `FactTable.warnings` so the
 /// red-team prompt has access to the full plan text.
 ///
 /// This allows `quick_review` to analyse plan files for logical gaps,
@@ -25,7 +25,7 @@ pub fn extract_markdown_facts(path: &Path, source: &str) -> Result<FactTable> {
     let mut current_lines: Vec<&str> = Vec::new();
 
     let lines: Vec<&str> = source.lines().collect();
-    let total = lines.len() as u32;
+    let total = u32::try_from(lines.len()).unwrap_or(u32::MAX);
 
     let flush = |heading: String,
                  start: u32,
@@ -56,7 +56,7 @@ pub fn extract_markdown_facts(path: &Path, source: &str) -> Result<FactTable> {
     };
 
     for (i, line) in lines.iter().enumerate() {
-        let lineno = i as u32 + 1;
+        let lineno = u32::try_from(i).unwrap_or(u32::MAX).saturating_add(1);
 
         if line.starts_with("## ") {
             if let Some(heading) = current_heading.take() {

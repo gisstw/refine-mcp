@@ -30,9 +30,7 @@ pub struct FactTable {
 /// How a `FactTable` was produced. Red team prompts read this to scale
 /// scrutiny — facts from `Textual` fallback are heuristic-only and merit
 /// extra review. `BladePreproc` lands with §2.3.
-#[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default,
-)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtractMethod {
     #[default]

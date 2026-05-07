@@ -20,10 +20,8 @@ pub struct PlanStep {
 /// dual-format separators (`.`, `:`, `：`), and §-prefixed forms.
 /// Captures: (1)=the heading hashes, (2)=the dotted number, (3)=title.
 static RE_NUMBERED_HEADING: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"^(#{2,4})\s+(?:Step\s+|Phase\s+|§)?(\d+(?:\.\d+){0,2})[\s.:：](.*?)$",
-    )
-    .expect("valid regex")
+    Regex::new(r"^(#{2,4})\s+(?:Step\s+|Phase\s+|§)?(\d+(?:\.\d+){0,2})[\s.:：](.*?)$")
+        .expect("valid regex")
 });
 
 /// Fallback when there's no numbered headings: any H2/H3 becomes a step.
@@ -80,7 +78,9 @@ fn render_plan_steps_section(steps: &[PlanStep]) -> String {
     if steps.is_empty() {
         return String::new();
     }
-    let mut out = String::from("\n## Available plan steps\n\nWhen reporting findings, set `affected_plan_steps` to one or more of these step IDs (or `[\"OUT_OF_SCOPE\"]` if a finding genuinely doesn't fit any step). Empty arrays are rejected.\n\n");
+    let mut out = String::from(
+        "\n## Available plan steps\n\nWhen reporting findings, set `affected_plan_steps` to one or more of these step IDs (or `[\"OUT_OF_SCOPE\"]` if a finding genuinely doesn't fit any step). Empty arrays are rejected.\n\n",
+    );
     for s in steps {
         if s.title.is_empty() {
             let _ = writeln!(out, "- `{}`", s.id);
@@ -137,14 +137,7 @@ pub fn build_red_team_prompts_selected(
     fact_tables: &[FactTable],
     teams: &[RedTeamId],
 ) -> Vec<RedTeamPrompt> {
-    build_red_team_prompts_with_context(
-        mode,
-        plan_content,
-        fact_tables,
-        teams,
-        "",
-        &[],
-    )
+    build_red_team_prompts_with_context(mode, plan_content, fact_tables, teams, "", &[])
 }
 
 /// Automatically select which red teams to run based on fact table signals.
@@ -290,14 +283,7 @@ pub fn build_red_team_prompts_with_schema(
     teams: &[RedTeamId],
     schema_section: &str,
 ) -> Vec<RedTeamPrompt> {
-    build_red_team_prompts_with_context(
-        mode,
-        plan_content,
-        fact_tables,
-        teams,
-        schema_section,
-        &[],
-    )
+    build_red_team_prompts_with_context(mode, plan_content, fact_tables, teams, schema_section, &[])
 }
 
 /// Like [`build_red_team_prompts_with_schema`] but also injects rules from
@@ -643,7 +629,6 @@ content
         assert!(out.contains("Fingerprint"));
         assert!(out.contains("OUT_OF_SCOPE"));
     }
-
 
     fn sample_fact_table() -> FactTable {
         FactTable {
