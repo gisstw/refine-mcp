@@ -37,7 +37,7 @@ static RE_HEADING_ANY: LazyLock<Regex> =
 /// The Tier 2 review (RT-B4) flagged that the previous regex required a
 /// literal `Step N` prefix and silently produced an empty list on plans
 /// using `### 2.1` style — so red teams' `affected_plan_steps` always
-/// degraded to OUT_OF_SCOPE. The fallback prevents that degradation.
+/// degraded to `OUT_OF_SCOPE`. The fallback prevents that degradation.
 #[must_use]
 pub fn extract_plan_steps(plan_md: &str) -> Vec<PlanStep> {
     let mut numbered: Vec<PlanStep> = Vec::new();
@@ -76,15 +76,16 @@ pub fn extract_plan_steps(plan_md: &str) -> Vec<PlanStep> {
 
 /// Render the available step list as a prompt fragment red teams can read.
 fn render_plan_steps_section(steps: &[PlanStep]) -> String {
+    use std::fmt::Write;
     if steps.is_empty() {
         return String::new();
     }
     let mut out = String::from("\n## Available plan steps\n\nWhen reporting findings, set `affected_plan_steps` to one or more of these step IDs (or `[\"OUT_OF_SCOPE\"]` if a finding genuinely doesn't fit any step). Empty arrays are rejected.\n\n");
     for s in steps {
         if s.title.is_empty() {
-            out.push_str(&format!("- `{}`\n", s.id));
+            let _ = writeln!(out, "- `{}`", s.id);
         } else {
-            out.push_str(&format!("- `{}` — {}\n", s.id, s.title));
+            let _ = writeln!(out, "- `{}` — {}", s.id, s.title);
         }
     }
     out
@@ -488,9 +489,9 @@ content
 ";
         let steps = extract_plan_steps(plan);
         let ids: Vec<&str> = steps.iter().map(|s| s.id.as_str()).collect();
-        assert!(ids.iter().any(|id| *id == "§2.1"), "expected §2.1 in {ids:?}");
-        assert!(ids.iter().any(|id| *id == "§2.2"));
-        assert!(ids.iter().any(|id| *id == "§3.1"));
+        assert!(ids.contains(&"§2.1"), "expected §2.1 in {ids:?}");
+        assert!(ids.contains(&"§2.2"));
+        assert!(ids.contains(&"§3.1"));
     }
 
     #[test]

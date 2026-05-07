@@ -149,9 +149,9 @@ fn looks_like_json(trimmed: &str) -> bool {
     stripped.starts_with('[') || stripped.starts_with('{')
 }
 
-/// Strip a leading ```` ```json ```` fence and the trailing ``` ``` ```` fence
-/// (case-insensitive on `json`). Returns the original string if no fences
-/// are present.
+/// Strip a leading triple-backtick `json` fence and its trailing triple
+/// backticks (case-insensitive on `json`). Returns the original string if
+/// no fences are present.
 fn strip_markdown_fences(text: &str) -> &str {
     let t = text.trim();
     let bytes = t.as_bytes();
@@ -196,12 +196,13 @@ fn raw_findings_to_findings(raw: Vec<RawFinding>) -> anyhow::Result<Vec<Finding>
                 continue;
             }
         };
+        // Source code is also encoded in prompt routing; missing or unknown
+        // tags fall back to RtA.
         let source = match r.source.as_deref().map(str::to_uppercase).as_deref() {
-            Some("RT-A" | "RTA") => RedTeamId::RtA,
             Some("RT-B" | "RTB") => RedTeamId::RtB,
             Some("RT-C" | "RTC") => RedTeamId::RtC,
             Some("RT-D" | "RTD") => RedTeamId::RtD,
-            _ => RedTeamId::RtA, // sensible default; the source is also encoded in prompt routing
+            _ => RedTeamId::RtA,
         };
         let mut finding = Finding::new(
             severity,
@@ -234,7 +235,9 @@ fn raw_findings_to_findings(raw: Vec<RawFinding>) -> anyhow::Result<Vec<Finding>
 
 /// The historical markdown parser. Kept as a fallback for legacy red team
 /// output that doesn't (yet) follow the JSON schema. Same signature as the
-/// pre-§3.2 `parse_red_team_output`.
+/// pre-§3.2 `parse_red_team_output` so the public-facing wrapper can swap
+/// between this and the JSON path without churn.
+#[allow(clippy::unnecessary_wraps)]
 fn parse_red_team_markdown(md: &str) -> anyhow::Result<Vec<Finding>> {
     let mut findings = Vec::new();
     let mut current_source: Option<RedTeamId> = None;

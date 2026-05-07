@@ -1,3 +1,4 @@
+pub mod bash;
 pub mod blade;
 pub mod blast_radius;
 pub mod markdown;
@@ -10,3 +11,4 @@ pub mod sql;
 pub mod textual;
 pub mod types;
 pub mod typescript;
+pub mod yaml;

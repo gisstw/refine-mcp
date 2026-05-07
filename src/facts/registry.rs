@@ -117,6 +117,14 @@ pub fn extract_for_path(path: &Path, source: &str) -> Result<ExtractResult, Extr
             crate::facts::sql::extract_sql_facts(path, source),
             ExtractMethod::TreeSitter,
         ),
+        "yml" | "yaml" => (
+            crate::facts::yaml::extract_yaml_facts(path, source),
+            ExtractMethod::TreeSitter,
+        ),
+        "sh" | "bash" => (
+            crate::facts::bash::extract_bash_facts(path, source),
+            ExtractMethod::TreeSitter,
+        ),
         _ => (
             crate::facts::textual::extract_textual_facts(path, source),
             ExtractMethod::Textual,
