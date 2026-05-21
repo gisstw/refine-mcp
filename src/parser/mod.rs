@@ -657,10 +657,7 @@ mod tests {
     fn diagnoses_missing_numbered_headers() {
         let prose = "Some random text without any structured findings here.\n";
         let diag = diagnose_parse_failure(prose);
-        assert!(
-            diag.contains("no numbered finding headers"),
-            "got: {diag}"
-        );
+        assert!(diag.contains("no numbered finding headers"), "got: {diag}");
     }
 
     #[test]
