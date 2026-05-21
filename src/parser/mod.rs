@@ -149,6 +149,54 @@ fn looks_like_json(trimmed: &str) -> bool {
     stripped.starts_with('[') || stripped.starts_with('{')
 }
 
+/// Inspect a non-empty raw report that parsed to zero findings and return
+/// a human-readable diagnosis pointing at the most likely format mistake.
+/// Used by `synthesize_findings` so callers don't get a vague "format
+/// mismatch" — they get told exactly what's wrong with their input.
+#[must_use]
+pub fn diagnose_parse_failure(report: &str) -> String {
+    let trimmed = report.trim();
+    if trimmed.is_empty() {
+        return "empty report".to_string();
+    }
+
+    // Sample the first ~200 chars for the diagnostic preview.
+    let preview: String = trimmed.chars().take(200).collect();
+    let preview_suffix = if trimmed.chars().count() > 200 {
+        "…"
+    } else {
+        ""
+    };
+
+    // Numbered bold items present? (e.g. "1. **Title**")
+    let has_numbered_bold = trimmed
+        .lines()
+        .any(|l| Regex::new(r"^\d+\.\s+\*\*").unwrap().is_match(l));
+    // Sub-field markers present?
+    let has_problem = trimmed.lines().any(|l| RE_PROBLEM.is_match(l));
+    let has_attack = trimmed.lines().any(|l| RE_ATTACK.is_match(l));
+    let has_rt_header = trimmed.lines().any(|l| RE_SOURCE_HEADER.is_match(l));
+    let has_severity_header = trimmed.lines().any(|l| RE_SEVERITY_HEADER.is_match(l));
+
+    let cause = if has_numbered_bold && !has_problem && !has_attack {
+        "looks like a CONDENSED/summarized list — each finding has a `1. **Title**` line \
+         but no `- Problem:` / `- Attack scenario:` sub-fields. The parser needs the \
+         FULL red team markdown (with Problem/Attack scenario/Suggested fix bullets), \
+         NOT a one-line-per-finding summary. \
+         Pass the raw subagent output directly instead of self-condensing it."
+    } else if !has_numbered_bold {
+        "no numbered finding headers found (expected lines starting with `1. **Title**`)"
+    } else if !has_rt_header && !has_severity_header {
+        "missing `## [RT-A|B|C|D]` source header and/or `### FATAL|HIGH` severity header"
+    } else {
+        "numbered findings present but sub-fields (`- Problem:` / `- Attack scenario:`) \
+         not detected — check indentation (must be `   - ` with leading whitespace) and \
+         field labels (English `Problem:` / `Attack scenario:` or Chinese `問題：` / `攻擊場景：`)"
+    };
+
+    format!("{cause}\n  Preview: {preview}{preview_suffix}")
+}
+
 /// Strip a leading triple-backtick `json` fence and its trailing triple
 /// backticks (case-insensitive on `json`). Returns the original string if
 /// no fences are present.
@@ -586,6 +634,32 @@ mod tests {
         assert!(
             msg.contains("schema") || msg.contains("0 findings") || msg.contains("invalid"),
             "expected schema-mismatch error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn diagnoses_condensed_summary_format() {
+        // The exact failure mode the user hit: a one-line-per-finding summary
+        // with no Problem:/Attack: sub-fields.
+        let condensed = "\
+1. **BackfillOtaGuestEmail race** — refetchActiveFromB24 runs before transaction
+2. **Idempotency missing** — repeated ingest doubles rows
+";
+        let diag = diagnose_parse_failure(condensed);
+        assert!(
+            diag.contains("CONDENSED"),
+            "expected condensed-format diagnosis, got: {diag}"
+        );
+        assert!(diag.contains("Preview:"));
+    }
+
+    #[test]
+    fn diagnoses_missing_numbered_headers() {
+        let prose = "Some random text without any structured findings here.\n";
+        let diag = diagnose_parse_failure(prose);
+        assert!(
+            diag.contains("no numbered finding headers"),
+            "got: {diag}"
         );
     }
 

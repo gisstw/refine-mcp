@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use refine_mcp::dedup::dedup_findings;
 use refine_mcp::facts::types::FactTable;
-use refine_mcp::parser::parse_red_team_output;
+use refine_mcp::parser::{diagnose_parse_failure, parse_red_team_output};
 use refine_mcp::prompts::build_blue_team_prompt;
 use refine_mcp::state::RefineState;
 use refine_mcp::types::RefineMode;
@@ -816,11 +816,30 @@ impl RefineServer {
         // an explicit warning so the agent can't mistake "0 findings" for
         // "all clean".
         if raw_count_total > 0 && raw_finding_count == 0 && parse_errors.is_empty() {
-            parse_errors.push(
-                "Parsed 0 findings from non-empty raw_reports — likely format mismatch \
-                 (red team output not in expected markdown schema). Check the report content."
-                    .to_string(),
+            use std::fmt::Write as _;
+            let mut msg = String::from(
+                "Parsed 0 findings from non-empty raw_reports — likely format mismatch.\n\
+                 Expected per-finding markdown shape:\n\
+                 \n\
+                 ## [RT-A] <role>\n\
+                 ### FATAL\n\
+                 1. **<title>** (`path/to/file.rs:120-130`)\n   \
+                    - Problem: ...\n   \
+                    - Attack scenario: ...\n   \
+                    - Suggested fix: ...\n   \
+                    - Affected plan steps: [Step 1]\n\
+                 \n\
+                 Per-report diagnosis:",
             );
+            for (i, report) in params.0.raw_reports.iter().enumerate() {
+                let _ = write!(
+                    &mut msg,
+                    "\n  [{}] {}",
+                    i + 1,
+                    diagnose_parse_failure(report)
+                );
+            }
+            parse_errors.push(msg);
         }
 
         let output = serde_json::json!({
