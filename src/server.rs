@@ -130,6 +130,11 @@ pub struct QuickReviewParams {
     pub search_paths: Option<Vec<String>>,
     /// Review mode: "default" (opus), "lite" (sonnet), "auto" (haiku)
     pub mode: Option<String>,
+    /// Git repo path to run git commands / resolve files against. Required
+    /// when the MCP server's own working directory differs from the repo
+    /// being reviewed — otherwise `git diff` runs against the wrong repo
+    /// (or fails) and changed files are silently missed.
+    pub repo_root: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -1072,7 +1077,7 @@ impl RefineServer {
 
         // Step 1: figure out which files changed.
         let base_ref = params.0.base_ref.clone().unwrap_or_else(detect_base_ref);
-        let changed_files = get_changed_files(&base_ref);
+        let changed_files = get_changed_files(&base_ref, None).included;
         if changed_files.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
                 serde_json::json!({
@@ -1211,11 +1216,29 @@ impl RefineServer {
         let params = params.0;
         let mode = parse_mode(params.mode.as_deref())?;
         let base_ref = params.base_ref.as_deref().unwrap_or("HEAD");
+        let repo_root = params.repo_root.as_deref();
 
-        // 1. Get changed files
-        let changed_files = match params.file_paths {
-            Some(ref files) if !files.is_empty() => files.clone(),
-            _ => get_changed_files(base_ref),
+        // 1. Get changed files. Auto-detection also surfaces untracked
+        // files (git diff never reports them) and whitelist-filtered files
+        // so nothing is silently dropped from the review — see the
+        // 2026-07-02 quick_review silent-skip incident (untracked
+        // migration files never appeared in the reviewed set).
+        let (changed_files, untracked, mut coverage_skips): (
+            Vec<String>,
+            std::collections::HashSet<String>,
+            Vec<SkippedFile>,
+        ) = match params.file_paths {
+            Some(ref files) if !files.is_empty() => {
+                (files.clone(), std::collections::HashSet::new(), Vec::new())
+            }
+            _ => {
+                let detected = get_changed_files(base_ref, repo_root);
+                (
+                    detected.included,
+                    detected.untracked,
+                    detected.skipped_unsupported,
+                )
+            }
         };
 
         if changed_files.is_empty() {
@@ -1330,6 +1353,27 @@ impl RefineServer {
             .cloned()
             .collect();
 
+        // 6b. Coverage-gap bookkeeping: list what actually got reviewed and
+        // call out — loudly — everything that was detected but skipped, so
+        // an untracked file (or an unsupported-extension file) can never
+        // silently fall out of the review the way it did on 2026-07-02.
+        coverage_skips.extend(extract_skipped.iter().cloned());
+        let not_reviewed_warnings: Vec<String> = coverage_skips
+            .iter()
+            .map(|s| format_not_reviewed_warning(s, &untracked))
+            .collect();
+        let reviewed_files: Vec<String> = changed_files
+            .iter()
+            .filter(|f| !extract_skipped.iter().any(|s| &s.path == *f))
+            .map(|f| {
+                if untracked.contains(f) {
+                    format!("{f} (untracked)")
+                } else {
+                    f.clone()
+                }
+            })
+            .collect();
+
         let output = serde_json::json!({
             "prompt": prompt_result.prompt,
             "recommended_model": prompt_result.recommended_model,
@@ -1347,6 +1391,10 @@ impl RefineServer {
         });
 
         let mut o = output;
+        o["reviewed_files"] = serde_json::json!(reviewed_files);
+        if !not_reviewed_warnings.is_empty() {
+            o["not_reviewed_warnings"] = serde_json::json!(not_reviewed_warnings);
+        }
         if !extract_errors.is_empty() {
             o["extract_warnings"] = serde_json::json!(extract_errors);
         }
@@ -1723,7 +1771,7 @@ fn run_extraction(
     let mut paths: Vec<String> = file_paths.to_vec();
 
     if diff_only {
-        let changed = git_changed_files();
+        let changed = git_changed_files(None).included;
         if !changed.is_empty() {
             paths.retain(|f| {
                 let fp = Path::new(f);
@@ -1815,23 +1863,117 @@ fn run_extraction(
     Ok(out)
 }
 
-/// Get files changed relative to HEAD via `git diff`.
-///
-/// Returns an empty vec on any failure (no git, not a repo, etc.).
-fn git_changed_files() -> Vec<String> {
-    std::process::Command::new("git")
-        .args(["diff", "--name-only", "HEAD"])
-        .output()
+/// Run `git <args>`, optionally scoped to `repo_root` via `current_dir`.
+/// Returns stdout on success, `None` on any failure (no git, not a repo,
+/// non-zero exit, etc.). Every git invocation in this module must go
+/// through here so `repo_root` actually takes effect — a bare
+/// `Command::new("git")` silently runs against the MCP server's own cwd,
+/// which is wrong whenever that cwd differs from the target repo.
+fn run_git(args: &[&str], repo_root: Option<&str>) -> Option<String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args);
+    if let Some(root) = repo_root {
+        cmd.current_dir(root);
+    }
+    cmd.output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+/// Resolve the absolute toplevel directory of the repo at `repo_root` (or
+/// the process cwd when `None`). Used to turn the repo-relative paths
+/// `git diff` / `git ls-files` print into absolute paths, so a later
+/// `path.exists()` / `fs::read_to_string()` in `run_extraction` doesn't
+/// depend on the MCP server's own working directory matching the repo.
+fn git_toplevel(repo_root: Option<&str>) -> Option<PathBuf> {
+    run_git(&["rev-parse", "--show-toplevel"], repo_root).map(|s| PathBuf::from(s.trim()))
+}
+
+const SUPPORTED_EXTENSIONS: [&str; 7] = ["php", "rs", "ts", "tsx", "js", "jsx", "py"];
+
+fn is_supported_extension(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| SUPPORTED_EXTENSIONS.contains(&ext))
+}
+
+fn classify_unsupported(path: &str) -> SkipReason {
+    match Path::new(path).extension().and_then(|e| e.to_str()) {
+        Some(ext) => SkipReason::UnsupportedExtension {
+            ext: ext.to_string(),
+        },
+        None => SkipReason::NoExtension,
+    }
+}
+
+/// Result of git-based changed-file discovery: files that passed the
+/// supported-extension whitelist (ready for `run_extraction`), which of
+/// those came from an untracked source, and files that were detected but
+/// filtered out by the whitelist. `skipped_unsupported` exists so callers
+/// can *warn* about filtered-out files instead of silently dropping them —
+/// the exact gap behind the 2026-07-02 `quick_review` silent-skip incident.
+#[derive(Debug, Default)]
+struct ChangedFilesResult {
+    included: Vec<String>,
+    untracked: std::collections::HashSet<String>,
+    skipped_unsupported: Vec<SkippedFile>,
+}
+
+/// Union one or more `git diff --name-only ...` invocations with
+/// `git ls-files --others --exclude-standard` (untracked new files, which
+/// `git diff` never reports at all), dedupe, then split the result by the
+/// supported-extension whitelist.
+fn detect_git_files(diff_arg_sets: &[&[&str]], repo_root: Option<&str>) -> ChangedFilesResult {
+    let mut seen = std::collections::HashSet::new();
+    let mut raw: Vec<(String, bool)> = Vec::new(); // (path, is_untracked)
+
+    for args in diff_arg_sets {
+        if let Some(out) = run_git(args, repo_root) {
+            for line in out.lines().filter(|l| !l.is_empty()) {
+                if seen.insert(line.to_string()) {
+                    raw.push((line.to_string(), false));
+                }
+            }
+        }
+    }
+
+    if let Some(out) = run_git(&["ls-files", "--others", "--exclude-standard"], repo_root) {
+        for line in out.lines().filter(|l| !l.is_empty()) {
+            if seen.insert(line.to_string()) {
+                raw.push((line.to_string(), true));
+            }
+        }
+    }
+
+    let toplevel = repo_root.and_then(|_| git_toplevel(repo_root));
+
+    let mut result = ChangedFilesResult::default();
+    for (path, is_untracked) in raw {
+        let resolved = match &toplevel {
+            Some(root) => root.join(&path).to_string_lossy().into_owned(),
+            None => path.clone(),
+        };
+        if is_supported_extension(&path) {
+            if is_untracked {
+                result.untracked.insert(resolved.clone());
+            }
+            result.included.push(resolved);
+        } else {
+            result.skipped_unsupported.push(SkippedFile {
+                path: resolved,
+                reason: classify_unsupported(&path),
+            });
+        }
+    }
+    result
+}
+
+/// Get files changed relative to HEAD via `git diff` (used by
+/// `run_extraction`'s `diff_only` filter). Includes untracked new files.
+fn git_changed_files(repo_root: Option<&str>) -> ChangedFilesResult {
+    detect_git_files(&[&["diff", "--name-only", "HEAD"]], repo_root)
 }
 
 /// Get files changed relative to a git ref.
@@ -1859,49 +2001,42 @@ fn detect_base_ref() -> String {
     "HEAD~1".to_string()
 }
 
-///
-/// Includes both staged and unstaged changes. Returns empty vec on failure.
-fn get_changed_files(base_ref: &str) -> Vec<String> {
-    // Get both staged + unstaged changes
-    let output = std::process::Command::new("git")
-        .args(["diff", "--name-only", base_ref])
-        .output();
+/// Includes staged, unstaged, and untracked changes. Runs against
+/// `repo_root` when given (falls back to the process's own working
+/// directory otherwise) — safe to call from an MCP server whose cwd
+/// differs from the repo being reviewed. Returns an empty result on any
+/// git failure (no git, not a repo, etc.).
+fn get_changed_files(base_ref: &str, repo_root: Option<&str>) -> ChangedFilesResult {
+    detect_git_files(
+        &[
+            &["diff", "--name-only", base_ref],
+            &["diff", "--name-only", "--cached"],
+        ],
+        repo_root,
+    )
+}
 
-    let mut files: Vec<String> = output
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // Also include staged changes not yet committed
-    if let Ok(staged) = std::process::Command::new("git")
-        .args(["diff", "--name-only", "--cached"])
-        .output()
-    {
-        if staged.status.success() {
-            for line in String::from_utf8_lossy(&staged.stdout).lines() {
-                if !line.is_empty() && !files.contains(&line.to_string()) {
-                    files.push(line.to_string());
-                }
-            }
-        }
-    }
-
-    // Filter to supported extensions
-    files.retain(|f| {
-        matches!(
-            Path::new(f).extension().and_then(|e| e.to_str()),
-            Some("php" | "rs" | "ts" | "tsx" | "js" | "jsx" | "py")
-        )
-    });
-
-    files
+/// Build a single "not reviewed" line for `quick_review`'s coverage-gap
+/// warning list — one line per skipped file, tagged `(untracked)` when the
+/// file came from `git ls-files --others` rather than a tracked diff, so
+/// the agent reading the output can never mistake "not in the list" for
+/// "nothing changed there".
+fn format_not_reviewed_warning(
+    skip: &SkippedFile,
+    untracked: &std::collections::HashSet<String>,
+) -> String {
+    let tag = if untracked.contains(&skip.path) {
+        " (untracked)"
+    } else {
+        ""
+    };
+    let reason = match &skip.reason {
+        SkipReason::UnsupportedExtension { ext } => format!("unsupported extension .{ext}"),
+        SkipReason::NoExtension => "no file extension".to_string(),
+        SkipReason::NotFound => "file not found".to_string(),
+        SkipReason::ReadFailed { error } => format!("read failed: {error}"),
+    };
+    format!("⚠️ 未納入審查: {}{} — {}", skip.path, tag, reason)
 }
 
 /// Build a `FingerprintMap` from a JSON-encoded `Vec<FactTable>` payload.
@@ -2044,6 +2179,155 @@ mod tests {
         assert!(banner.starts_with("⚠️ Skipped 3 file(s)"));
         assert!(banner.contains("unsupported_extension: 2"));
         assert!(banner.contains("no_extension: 1"));
+    }
+
+    // ── get_changed_files / untracked detection / repo_root ──
+    //
+    // 2026-07-02 incident: a brand-new (untracked) migration file never
+    // showed up in `get_changed_files` because it only ran `git diff`,
+    // which never reports untracked files. quick_review silently reviewed
+    // nothing for it and reported "no CRITICAL". These tests pin the fix:
+    // untracked files must be detected, and detection must work correctly
+    // when scoped to a `repo_root` that differs from the test process cwd
+    // (we never mutate the process cwd itself — `run_git` always passes
+    // `repo_root` via `Command::current_dir`, so parallel `cargo test`
+    // runs stay safe).
+
+    /// Create a throwaway git repo with an initial commit (so `HEAD`
+    /// exists) and return its tempdir handle plus the toplevel path as a
+    /// `String` for convenience.
+    fn init_temp_repo() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let root = dir.path().to_str().expect("utf8 tempdir path").to_string();
+
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?} failed");
+        };
+
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        // README.md is a deliberately unsupported extension (.md is not in
+        // SUPPORTED_EXTENSIONS) so tests can exercise the whitelist path;
+        // existing.rs is the supported-extension tracked file used to
+        // verify normal `git diff` detection still works.
+        std::fs::write(dir.path().join("README.md"), "init").expect("write README");
+        std::fs::write(dir.path().join("existing.rs"), "fn existing() {}")
+            .expect("write existing.rs");
+        run(&["add", "README.md", "existing.rs"]);
+        run(&["commit", "-q", "-m", "init"]);
+
+        (dir, root)
+    }
+
+    #[test]
+    fn get_changed_files_detects_untracked_new_file() {
+        let (dir, root) = init_temp_repo();
+
+        // Untracked new file `git diff` alone would never see.
+        std::fs::write(dir.path().join("new_feature.rs"), "fn main() {}")
+            .expect("write untracked file");
+        // Untracked file with an unsupported extension — must be reported
+        // as skipped, not silently absent from every list.
+        std::fs::write(dir.path().join("notes.txt"), "todo").expect("write untracked txt");
+        // Tracked, modified file (goes through the normal `git diff` path).
+        std::fs::write(
+            dir.path().join("existing.rs"),
+            "fn existing() { /* changed */ }",
+        )
+        .expect("modify tracked file");
+
+        let result = get_changed_files("HEAD", Some(&root));
+
+        let untracked_rs = result
+            .included
+            .iter()
+            .find(|p| p.ends_with("new_feature.rs"))
+            .unwrap_or_else(|| {
+                panic!("untracked .rs file must be detected: {:?}", result.included)
+            });
+        assert!(
+            result.untracked.contains(untracked_rs),
+            "new_feature.rs must be flagged as untracked"
+        );
+
+        assert!(
+            result.included.iter().any(|p| p.ends_with("existing.rs")),
+            "tracked modified file must still be detected: {:?}",
+            result.included
+        );
+        let tracked_existing = result
+            .included
+            .iter()
+            .find(|p| p.ends_with("existing.rs"))
+            .unwrap();
+        assert!(
+            !result.untracked.contains(tracked_existing),
+            "tracked file must not be flagged as untracked"
+        );
+
+        assert!(
+            result
+                .skipped_unsupported
+                .iter()
+                .any(|s| s.path.ends_with("notes.txt")),
+            "unsupported-extension untracked file must appear in skipped_unsupported: {:?}",
+            result.skipped_unsupported
+        );
+    }
+
+    #[test]
+    fn get_changed_files_repo_root_returns_absolute_paths() {
+        let (dir, root) = init_temp_repo();
+        std::fs::write(dir.path().join("mod.rs"), "fn x() {}").expect("write file");
+
+        let result = get_changed_files("HEAD", Some(&root));
+
+        assert!(!result.included.is_empty(), "expected at least one file");
+        for p in &result.included {
+            assert!(
+                Path::new(p).is_absolute(),
+                "expected absolute path when repo_root is given, got {p}"
+            );
+            assert!(
+                p.starts_with(&root)
+                    || Path::new(&root)
+                        .canonicalize()
+                        .is_ok_and(|c| { p.starts_with(c.to_string_lossy().as_ref()) }),
+                "resolved path {p} must live under repo_root {root}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_not_reviewed_warning_flags_unsupported_and_missing_files() {
+        let untracked: std::collections::HashSet<String> =
+            ["new_feature.txt".to_string()].into_iter().collect();
+
+        let skip_unsupported = SkippedFile {
+            path: "new_feature.txt".into(),
+            reason: SkipReason::UnsupportedExtension { ext: "txt".into() },
+        };
+        let skip_missing = SkippedFile {
+            path: "deleted.rs".into(),
+            reason: SkipReason::NotFound,
+        };
+
+        let w1 = format_not_reviewed_warning(&skip_unsupported, &untracked);
+        let w2 = format_not_reviewed_warning(&skip_missing, &untracked);
+
+        assert!(w1.starts_with("⚠️ 未納入審查"));
+        assert!(w1.contains("(untracked)"));
+        assert!(w1.contains("unsupported extension .txt"));
+
+        assert!(w2.starts_with("⚠️ 未納入審查"));
+        assert!(w2.contains("file not found"));
+        assert!(!w2.contains("untracked"));
     }
 
     // ── detect_base_ref ──
