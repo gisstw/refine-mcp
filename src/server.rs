@@ -1216,7 +1216,23 @@ impl RefineServer {
         let params = params.0;
         let mode = parse_mode(params.mode.as_deref())?;
         let base_ref = params.base_ref.as_deref().unwrap_or("HEAD");
-        let repo_root = params.repo_root.as_deref();
+
+        // 0. Resolve repo_root to the actual git toplevel up front (see
+        // resolve_repo_root docs) — a bad repo_root must fail loudly here,
+        // not silently degrade into "no changed files".
+        let resolved_repo_root = match resolve_repo_root(params.repo_root.as_deref()) {
+            Ok(root) => root,
+            Err(msg) => {
+                tracing::warn!(
+                    repo_root = ?params.repo_root,
+                    "quick_review early-exit: repo_root did not resolve to a git toplevel"
+                );
+                return Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::json!({ "error": msg }).to_string(),
+                )]));
+            }
+        };
+        let repo_root = resolved_repo_root.as_deref();
 
         // 1. Get changed files. Auto-detection also surfaces untracked
         // files (git diff never reports them) and whitelist-filtered files
@@ -1890,6 +1906,40 @@ fn git_toplevel(repo_root: Option<&str>) -> Option<PathBuf> {
     run_git(&["rev-parse", "--show-toplevel"], repo_root).map(|s| PathBuf::from(s.trim()))
 }
 
+/// Resolve `repo_root` (which may be any directory inside the target repo,
+/// e.g. a subdirectory) down to the actual git toplevel, so every later git
+/// invocation runs with `current_dir` = toplevel.
+///
+/// This matters because `git diff --name-only` always prints paths
+/// relative to the toplevel regardless of cwd, while
+/// `git ls-files --others --exclude-standard` prints paths relative to
+/// (and only scans below) cwd. If we ran the two with different cwds —
+/// e.g. `current_dir` = the raw subdirectory the caller passed — the two
+/// outputs would use different path bases (untracked paths could collide
+/// with unrelated files when re-joined) and untracked-file detection would
+/// miss anything outside that subdirectory. Resolving to the toplevel
+/// first and using it everywhere keeps both sources on the same basis and
+/// covers the whole repo.
+///
+/// Returns `Ok(None)` when `repo_root` itself is `None` (caller keeps
+/// using the process's own cwd, unchanged from before). Returns `Err` with
+/// a message naming `repo_root` when it doesn't resolve to a git repo at
+/// all — the caller must surface this as an explicit error, not silently
+/// fall through to an empty file list (that reads as "no changes" instead
+/// of "your `repo_root` is wrong").
+fn resolve_repo_root(repo_root: Option<&str>) -> Result<Option<String>, String> {
+    match repo_root {
+        None => Ok(None),
+        Some(root) => match git_toplevel(Some(root)) {
+            Some(toplevel) => Ok(Some(toplevel.to_string_lossy().into_owned())),
+            None => Err(format!(
+                "Invalid repo_root '{root}': not a git repository (or path does not exist) — \
+                 `git rev-parse --show-toplevel` failed in that directory"
+            )),
+        },
+    }
+}
+
 const SUPPORTED_EXTENSIONS: [&str; 7] = ["php", "rs", "ts", "tsx", "js", "jsx", "py"];
 
 fn is_supported_extension(path: &str) -> bool {
@@ -2302,6 +2352,89 @@ mod tests {
                 "resolved path {p} must live under repo_root {root}"
             );
         }
+    }
+
+    // ── resolve_repo_root (HIGH-1 / HIGH-2 follow-up fix) ──
+    //
+    // Red-team found: git diff prints paths relative to the toplevel no
+    // matter the cwd, but `git ls-files --others` only scans below cwd and
+    // prints paths relative to cwd. Passing a repo subdirectory straight
+    // through as repo_root therefore (a) missed untracked files outside
+    // that subdirectory and (b) could produce wrong joined paths. The fix
+    // resolves repo_root to the true toplevel *before* any other git call,
+    // so every subsequent git invocation (and path join) uses the same
+    // basis. A repo_root that doesn't resolve at all must be a hard error,
+    // not a silently-empty "no changed files".
+
+    #[test]
+    fn resolve_repo_root_from_subdirectory_still_scans_whole_repo() {
+        let (dir, root) = init_temp_repo();
+
+        // Untracked file living in a nested subdirectory...
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).expect("create subdir");
+        std::fs::write(sub.join("nested_untracked.rs"), "fn n() {}").expect("write nested file");
+        // ...and another untracked file at the repo root, outside `sub`.
+        std::fs::write(dir.path().join("top_untracked.rs"), "fn t() {}")
+            .expect("write top-level file");
+
+        let sub_str = sub.to_str().expect("utf8 subdir path");
+        let resolved = resolve_repo_root(Some(sub_str))
+            .expect("subdirectory of a git repo must resolve")
+            .expect("Some(root) input must yield Some(toplevel)");
+
+        // Toplevel must be the repo root, not the subdirectory itself.
+        assert_eq!(
+            Path::new(&resolved).canonicalize().unwrap(),
+            Path::new(&root).canonicalize().unwrap(),
+        );
+
+        let result = get_changed_files("HEAD", Some(&resolved));
+
+        // File outside the subdirectory passed as repo_root must still be
+        // detected — this is exactly what broke before the fix.
+        assert!(
+            result
+                .included
+                .iter()
+                .any(|p| p.ends_with("top_untracked.rs")),
+            "file outside the repo_root subdirectory must still be detected: {:?}",
+            result.included
+        );
+        assert!(
+            result
+                .included
+                .iter()
+                .any(|p| p.ends_with("nested_untracked.rs")),
+            "file inside the repo_root subdirectory must still be detected: {:?}",
+            result.included
+        );
+        for p in &result.included {
+            assert!(
+                Path::new(p).is_absolute(),
+                "resolved paths must be absolute, got {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_repo_root_rejects_non_repo_path() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        // Deliberately NOT a git repo.
+        let bogus = dir.path().join("does-not-exist-as-a-repo");
+        let bogus_str = bogus.to_str().expect("utf8 path").to_string();
+
+        let err = resolve_repo_root(Some(&bogus_str))
+            .expect_err("a non-git-repo path must be a hard error, not an empty result");
+
+        assert!(
+            err.contains(&bogus_str),
+            "error must name the offending repo_root value: {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("not a git repository") || err.contains("repo"),
+            "error must explain the path is not a valid git repo: {err}"
+        );
     }
 
     #[test]
