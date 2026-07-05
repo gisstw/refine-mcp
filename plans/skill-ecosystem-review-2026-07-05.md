@@ -19,7 +19,7 @@
 - [x] 7. 自製 skills 迭代：commit `4faca44`（domain 批）+`b6842de`（harness 批+op-do wrapper OP_SKIP_GUARDRAILS 實測）+`4f0b773`（elastix namespace）
 - [x] 8. 外部 skill：ECC 4 件抄入+在地化+主線程安全審查（commit `843ddcc`），frontmatter YAML 修復（`fb0b6f3`）後全部正常註冊（description+觸發詞已生效）；superpowers 6.1.1/example-skills 經查已裝最新免動作
 - [x] 9. 總驗收（新 binary JSON-RPC stdio 實測）：untracked migration 進審查並標 `(untracked)` ✅／.txt 進 `⚠️ 未納入審查` ✅／repo_root=子目錄仍全庫掃+絕對路徑 ✅／無效 repo_root 回明確錯誤+warn log ✅；新 skill 4 件 YAML 解析+註冊+觸發詞全部生效（fb0b6f3 後 Skill 清單確認）
-- [~] 10. 收尾：memory 已改寫（gap→已修復+用法）、handoff 更新中、plan-html-output 產 HTML、/capture-error
+- [x] 10. 收尾：memory 改寫（gap→已修復+用法）+MEMORY.md 索引、lessons 3 筆（35ef337+NAS）、backlog 3 筆 TASK、HTML viewer 產出（第一次 op-do 沙箱讀不到模板半途而廢→workdir 改 /home/www 重跑成功 52.5K；踩點已回寫 dispatching-workers §6.1+plan-html-output）、handoff 全程滾動更新
 - 附帶修復：confab-write-gate 誤擋真 refine-mcp commit → 已知 repo 補列（~/.claude `60e161f`）
 
 ## 已知事實
